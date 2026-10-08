@@ -1,6 +1,6 @@
 # SnapKart API
 
-Backend foundation for the SnapKart barcode-to-cart self-checkout concept. The first version is a modular monolith with clear auth, catalog, cart, checkout, payment-adapter, inventory, and admin boundaries. Keeping these boundaries in one deployable service makes local development and transactions straightforward; they can be split into microservices when scale or team ownership requires it.
+SnapKart is a barcode-to-cart self-checkout project. Its goal is to reduce customer waiting time, improve transaction convenience, and reduce reliance on conventional cashier-operated billing counters. This repository contains the backend API; the frontend is developed separately.
 
 ## Start locally
 
