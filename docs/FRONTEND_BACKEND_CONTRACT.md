@@ -72,6 +72,7 @@ Use `product.id` for stable UI keys, `product.barcode` for scan/cart actions, `p
   "id": "cart-id",
   "items": [
     {
+      "id": "cart-item-id",
       "productId": "database-product-id",
       "barcode": "SNAPMOCK0001",
       "name": "Whole Milk 1 L",
@@ -109,7 +110,7 @@ Checkout returns `{ "order": { ... } }`. The order includes `id`, `status`, `sub
 | Order history | `GET /orders` | Yes | Returns `{ "items": [...] }` |
 | Order details | `GET /orders/:orderId` | Yes | Returns `{ "order" }` |
 
-Admin endpoints are listed below for a future admin screen. They require a user whose database role is `ADMIN`; public registration always creates `CUSTOMER` users.
+The frontend includes an admin dashboard at `/admin`, linked from Profile for users with role `ADMIN`. These endpoints also enforce that role on the backend; public registration always creates `CUSTOMER` users.
 
 | Admin screen/action | Method and path | Result |
 | --- | --- | --- |
@@ -135,5 +136,5 @@ Admin endpoints are listed below for a future admin screen. They require a user 
 
 - The payment provider is simulated. No real payment method or card details are accepted.
 - The backend uses the seeded catalog for exact barcode lookup. It does not call Open Food Facts or another external product database.
-- Admin routes exist, but there is no admin UI or public admin-promotion endpoint.
+- The admin dashboard requires an operator account promoted to `ADMIN` through a controlled database operation; there is no public admin-promotion endpoint.
 - The seed interprets workbook prices as INR because no currency was specified. Confirm that assumption before using values beyond mock development.

@@ -10,6 +10,10 @@ SnapKart is a barcode-to-cart self-checkout project. Its goal is to reduce custo
 4. Run `npm install`, then `npm run db:generate` and `npm run db:migrate`.
 5. Run `npm run db:seed` to load the 99 mock catalog products, then `npm run dev`. Health check: `GET http://localhost:3000/health`.
 
+## Start the frontend
+
+In a second PowerShell window, run `Set-Location .\frontend`, `npm install`, then `npm run dev`. Open `http://localhost:5173`. The frontend calls the API at `http://localhost:3000` by default; set `VITE_API_BASE_URL` in `frontend/.env.local` only if the API uses a different address.
+
 Money uses integer minor units (`priceMinor`: paise for INR). `prisma/mock-products.json` is development-only sample data derived from the supplied workbook. Since the workbook does not state a currency, its prices are treated as INR for this mock import; change that assumption if its creator intended another currency. It includes synthetic scan identifiers (`SNAPMOCK0001`, etc.) because the workbook's UPC values aren't reliable enough to represent real retail barcodes. Make QR labels containing these identifiers to exercise the scan-to-lookup flow, or pass them directly to `GET /products/barcode/:barcode`. The seed command is safe to re-run for those mock identifiers, but it overwrites their current seeded fields. Do not use this catalog or its generated identifiers for real retail checkout.
 
 The local payment adapter returns a simulated success and must be replaced before handling real payments. Never accept card details in this API; use a PCI-compliant provider's hosted/tokenized flow and verify signed webhooks. Admin users should be provisioned out-of-band by an operator; public registration always creates a customer.
@@ -28,4 +32,4 @@ All request and response bodies are JSON. Protected routes require `Authorizatio
 
 Checkout revalidates inventory and snapshots product names/prices into order lines in a serializable database transaction. Orders are scoped to their customer on customer routes. Inventory corrections record the admin, delta, resulting quantity, reason, and timestamp. Payment reconciliation/webhooks, tax, discounts, store/location scoping, and shipment/fulfilment are follow-on integrations.
 
-There is no web client in this repository yet, so the admin interface is represented by protected admin APIs for a future dashboard to consume. Promote the first operator to `ADMIN` through a controlled database operation before using those routes; the public registration endpoint cannot assign roles.
+The React frontend lives in `frontend/`. It includes customer shopping screens and an admin dashboard at `/admin`; the dashboard is linked from Profile for `ADMIN` accounts. Promote the first operator to `ADMIN` through a controlled database operation before using admin features; public registration cannot assign roles.

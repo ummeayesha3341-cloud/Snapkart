@@ -34,7 +34,7 @@ const safeUser = (user: { id: string; email: string; name: string; role: string 
 const cartView = (cart: any) => ({
   id: cart.id,
   items: cart.items.map((item: any) => ({
-    productId: item.productId, barcode: item.product.barcode, name: item.product.name,
+    id: item.id, productId: item.productId, barcode: item.product.barcode, name: item.product.name,
     unitPriceMinor: item.product.priceMinor, currency: item.product.currency,
     quantity: item.quantity, lineTotalMinor: item.product.priceMinor * item.quantity,
   })),
@@ -177,13 +177,13 @@ app.get("/admin/inventory", { preHandler: requireAdmin }, async (request) => {
   return { items, total, page: query.page, limit: query.limit };
 });
 app.post("/admin/products", { preHandler: requireAdmin }, async (request, reply) => {
-  const body = z.object({ barcode: z.string().trim().min(1).max(80), name: z.string().trim().min(1).max(200), description: z.string().max(2000).optional(), priceMinor: z.number().int().positive(), currency: z.string().length(3).default("INR"), stock: z.number().int().min(0).default(0) }).parse(request.body);
+  const body = z.object({ barcode: z.string().trim().min(1).max(80), name: z.string().trim().min(1).max(200), description: z.string().max(2000).optional(), category: z.string().max(120).optional(), brand: z.string().max(120).optional(), supplier: z.string().max(160).optional(), priceMinor: z.number().int().positive(), currency: z.string().length(3).default("INR"), stock: z.number().int().min(0).default(0) }).parse(request.body);
   const product = await db.product.create({ data: body });
   return reply.code(201).send({ product });
 });
 app.patch("/admin/products/:id", { preHandler: requireAdmin }, async (request, reply) => {
   const { id } = idParam.parse(request.params);
-  const body = z.object({ barcode: z.string().trim().min(1).max(80).optional(), name: z.string().trim().min(1).max(200).optional(), description: z.string().max(2000).nullable().optional(), priceMinor: z.number().int().positive().optional(), currency: z.string().length(3).optional(), active: z.boolean().optional() }).parse(request.body);
+  const body = z.object({ barcode: z.string().trim().min(1).max(80).optional(), name: z.string().trim().min(1).max(200).optional(), description: z.string().max(2000).nullable().optional(), category: z.string().max(120).nullable().optional(), brand: z.string().max(120).nullable().optional(), supplier: z.string().max(160).nullable().optional(), priceMinor: z.number().int().positive().optional(), currency: z.string().length(3).optional(), active: z.boolean().optional() }).parse(request.body);
   const product = await db.product.update({ where: { id }, data: body });
   return { product };
 });
