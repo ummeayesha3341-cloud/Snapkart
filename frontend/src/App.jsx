@@ -4,7 +4,7 @@ import {BottomNav,Toast,Logo} from './components/ui';
 import Auth from './screens/Auth';import Home from './screens/Home';import Scan from './screens/Scan';import Cart from './screens/Cart';import Checkout from './screens/Checkout';
 import {Bills,BillDetail} from './screens/Bills';import {Search,Profile,Help,StoreMap} from './screens/Misc';
 import Admin from './screens/Admin';
-const Guard=({children})=>{const {user}=useApp();return user?children:<Navigate to="/login" replace/>};
+const Guard=({children})=>{const {user}=useApp(),loc=useLocation();return user?children:<Navigate to="/login" state={{from:loc}} replace/>};
 const AdminGuard=({children})=>{const {user}=useApp();return !user?<Navigate to="/login" replace/>:user.role==='ADMIN'?children:<Navigate to="/" replace/>};
 export default function App(){
  const {ready,user}=useApp(),loc=useLocation();

@@ -1,9 +1,9 @@
 import {useState} from 'react';
-import {Link,useNavigate} from 'react-router-dom';
+import {Link,useNavigate,useLocation} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
 import {Button,Input,Logo,Icon} from '../components/ui';
 export default function Auth({mode}){
- const reg=mode==='register',{login,register}=useApp(),nav=useNavigate();
+ const reg=mode==='register',{login,register}=useApp(),nav=useNavigate(),loc=useLocation();
  const [f,setF]=useState({name:'',email:'',password:''}),[e,setE]=useState({}),[err,setErr]=useState(''),[busy,setBusy]=useState(false),[show,setShow]=useState(false);
  const set=k=>v=>setF({...f,[k]:v.target.value});
  const submit=async ev=>{ev.preventDefault();const x={};
@@ -11,7 +11,7 @@ export default function Auth({mode}){
   if(!f.email.trim())x.email='Enter your email';else if(!/^\S+@\S+\.\S+$/.test(f.email))x.email='Enter a valid email address';
   if(!f.password)x.password='Enter your password';else if(reg&&f.password.length<10)x.password='Use at least 10 characters';
   setE(x);setErr('');if(Object.keys(x).length)return;setBusy(true);
-  try{reg?await register({name:f.name.trim(),email:f.email.trim(),password:f.password}):await login({email:f.email.trim(),password:f.password});nav('/',{replace:true})}
+  try{reg?await register({name:f.name.trim(),email:f.email.trim(),password:f.password}):await login({email:f.email.trim(),password:f.password});nav(!reg&&loc.state?.from?.pathname?`${loc.state.from.pathname}${loc.state.from.search||''}${loc.state.from.hash||''}`:'/',{replace:true})}
   catch(er){setErr(er.message)}finally{setBusy(false)}};
  return <div className="page" style={{paddingTop:56}}><Logo size={44}/><h1 className="disp" style={{margin:'32px 0 6px'}}>{reg?'Create your account':'Welcome back'}</h1><p className="mut" style={{marginBottom:28}}>{reg?'Start scanning in under a minute.':'Sign in to continue shopping.'}</p>
  <form onSubmit={submit} noValidate>{reg&&<Input label="Full name" value={f.name} onChange={set('name')} error={e.name} autoComplete="name"/>}

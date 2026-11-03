@@ -166,9 +166,9 @@ app.get("/orders/:id", { preHandler: requireAuth }, async (request, reply) => {
 app.get("/admin/summary", { preHandler: requireAdmin }, async () => {
   const [products, customers, orders, revenue] = await Promise.all([
     db.product.count({ where: { active: true } }), db.user.count({ where: { role: "CUSTOMER" } }),
-    db.order.count(), db.order.aggregate({ where: { status: "PAID" }, _sum: { subtotalMinor: true } }),
+    db.order.count(), db.payment.aggregate({ where: { status: "SUCCEEDED", provider: { not: "mock" } }, _sum: { amountMinor: true } }),
   ]);
-  return { products, customers, orders, revenueMinor: revenue._sum.subtotalMinor ?? 0 };
+  return { products, customers, orders, revenueMinor: revenue._sum.amountMinor ?? 0 };
 });
 app.get("/admin/inventory", { preHandler: requireAdmin }, async (request) => {
   const query = z.object({ q: z.string().trim().max(120).optional(), lowStockAt: z.coerce.number().int().min(0).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(request.query);

@@ -2,9 +2,10 @@ import {useEffect,useState,useCallback} from 'react';
 import {Link,useNavigate,useParams} from 'react-router-dom';
 import {api} from '../services/api';
 import {Header,Price,Skeleton,EmptyState,ErrorState,StatusBadge} from '../components/ui';
+import InvoiceQr from '../components/InvoiceQr';
 import {when,dayKey,shortId,clean} from '../utils/format';
 const useLoad=fn=>{const [s,set]=useState({loading:true});const go=useCallback(()=>{set({loading:true});fn().then(d=>set({d}),e=>set({e:e.message}))},[fn]);useEffect(go,[go]);return [s,go]};
-const st=o=>o.paymentStatus||o.payment?.status||o.status||'PAID';
+const st=o=>o.payment?.provider==='mock'?'NOT_COLLECTED':o.paymentStatus||o.payment?.status||o.status||'PAID';
 const tot=o=>o.totalMinor??o.subtotalMinor;
 export function Bills(){
  const nav=useNavigate(),f=useCallback(()=>api.orders(),[]),[s,go]=useLoad(f);
@@ -21,6 +22,7 @@ export function BillDetail(){
  if(s.e)return <div className="page"><Header title="Bill" back/><ErrorState text={s.e} onRetry={go}/></div>;
  const o=s.d.order||s.d;const cur=o.currency||o.items?.[0]?.currency;
  return <div className="page"><Header title={`Order #${shortId(o.id)}`} back/>
+ <InvoiceQr orderId={o.id}/>
  <div className="card gap"><div className="row sp"><span className="mut">Date</span><span>{when(o.createdAt)}</span></div><div className="row sp"><span className="mut">Payment</span><StatusBadge s={st(o)}/></div></div>
  <p className="sec" style={{margin:'20px 0 8px'}}>Items</p><div className="card gap">{(o.items||[]).map((i,x)=><div key={x} className="row sp"><div><b>{clean(i.productName||i.name)}</b><p className="mut">{i.quantity} × <Price minor={i.unitPriceMinor} cur={cur}/></p></div><Price minor={i.lineTotalMinor??i.unitPriceMinor*i.quantity} cur={cur}/></div>)}</div>
  <div className="card gap" style={{marginTop:16}}><div className="row sp"><span className="mut">Subtotal</span><Price minor={o.subtotalMinor??tot(o)} cur={cur}/></div><div className="row sp"><span className="h2">Total</span><Price minor={tot(o)} cur={cur} className="h1"/></div></div></div>;

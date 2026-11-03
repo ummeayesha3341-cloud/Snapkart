@@ -7,6 +7,10 @@ Mobile-first self-checkout frontend (React + Vite). Talks only to the SnapKart H
     npm run dev              # http://localhost:5173
     npm run build            # production build
 
+## Test camera scanning on a phone
+
+Phone browsers require HTTPS for camera access. For a temporary local test, set `VITE_API_BASE_URL=/api` in `.env.local`, start Vite, then create a tunnel and open its HTTPS URL on the phone. The preferred Docker Desktop command is `docker run --rm cloudflare/cloudflared:latest tunnel --url http://host.docker.internal:5173`; alternatively run `npx --yes localtunnel --port 5173`. Vite proxies `/api` to the local backend. Keep the backend, Vite, and tunnel running; stop the tunnel after testing. A tunnel makes the development site reachable from the internet, so use test accounts and do not enter sensitive data.
+
 ## Structure
 `src/services/api.js` API client (base URL, auth header, timeout, error mapping, 401) · `src/context/AppContext.jsx` auth + cart state · `src/components/ui.jsx` shared components · `src/screens/` screens · `src/utils/format.js` currency/date helpers · `src/theme/theme.css` design tokens.
 

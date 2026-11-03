@@ -81,7 +81,7 @@ export default function Admin(){
   {tab==='orders'&&<section>
    <div className="row sp" style={{marginBottom:12}}><h2 className="h1">Orders</h2><select className="inp" aria-label="Filter order status" style={{width:'auto'}} value={orderStatus} onChange={e=>setOrderStatus(e.target.value)}><option value="">All statuses</option><option value="PAID">Paid</option><option value="PENDING_PAYMENT">Pending payment</option><option value="PAYMENT_FAILED">Payment failed</option><option value="CANCELLED">Cancelled</option></select></div>
    {loadingOrders&&!orders.length?<p className="mut">Loading orders…</p>:!orders.length?<div className="card"><p className="mut">No orders found.</p></div>:<div className="gap">{orders.map(o=><article className="card gap" key={o.id}>
-    <div className="row sp"><div><h3 className="h2">{shortId(o.id)}</h3><p className="mut">{when(o.createdAt)}</p></div><StatusBadge s={o.payment?.status||o.status}/></div>
+    <div className="row sp"><div><h3 className="h2">{shortId(o.id)}</h3><p className="mut">{when(o.createdAt)}</p></div><StatusBadge s={o.payment?.provider==='mock'?'NOT_COLLECTED':o.payment?.status||o.status}/></div>
     <p><strong>{clean(o.user?.name)}</strong><br/><span className="mut">{clean(o.user?.email)}</span></p>
     <div className="row sp"><span className="mut">{o.items?.reduce((n,i)=>n+i.quantity,0)||0} items</span><Price minor={o.subtotalMinor} cur={o.currency}/></div>
    </article>)}</div>}
