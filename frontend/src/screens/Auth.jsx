@@ -13,7 +13,7 @@ export default function Auth({mode}){
   setE(x);setErr('');if(Object.keys(x).length)return;setBusy(true);
   try{reg?await register({name:f.name.trim(),email:f.email.trim(),password:f.password}):await login({email:f.email.trim(),password:f.password});nav(!reg&&loc.state?.from?.pathname?`${loc.state.from.pathname}${loc.state.from.search||''}${loc.state.from.hash||''}`:'/',{replace:true})}
   catch(er){setErr(er.message)}finally{setBusy(false)}};
- return <div className="page" style={{paddingTop:56}}><Logo size={44}/><h1 className="disp" style={{margin:'32px 0 6px'}}>{reg?'Create your account':'Welcome back'}</h1><p className="mut" style={{marginBottom:28}}>{reg?'Start scanning in under a minute.':'Sign in to continue shopping.'}</p>
+ return <div className="page auth-page" style={{paddingTop:56}}><Logo size={44}/><h1 className="disp" style={{margin:'32px 0 6px'}}>{reg?'Create your account':'Welcome back'}</h1><p className="mut" style={{marginBottom:28}}>{reg?'Start scanning in under a minute.':'Sign in to continue shopping.'}</p>
  <form onSubmit={submit} noValidate>{reg&&<Input label="Full name" value={f.name} onChange={set('name')} error={e.name} autoComplete="name"/>}
  <Input label="Email" type="email" value={f.email} onChange={set('email')} error={e.email} autoComplete="email"/>
  <div style={{position:'relative'}}><Input label="Password" type={show?'text':'password'} value={f.password} onChange={set('password')} error={e.password} autoComplete={reg?'new-password':'current-password'}/><button type="button" aria-label={show?'Hide password':'Show password'} onClick={()=>setShow(!show)} style={{position:'absolute',right:6,top:26,width:40,height:44,border:0,background:'none',color:'var(--mut)'}}><Icon n="eye"/></button></div>

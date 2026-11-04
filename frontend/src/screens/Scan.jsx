@@ -8,7 +8,9 @@ import {clean} from '../utils/format';
 export function Scanner({onDetect,paused,onClose}){
  const vid=useRef(),trk=useRef(),controls=useRef(),[err,setErr]=useState(''),[torch,setTorch]=useState(false),[manual,setManual]=useState('');
  useEffect(()=>{let stop=false,nativeTimer=null;
-  const videoConstraints={facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080},advanced:[{focusMode:'continuous'}]};
+  // Keep getUserMedia constraints broadly compatible; request continuous AF
+  // separately only when the active camera reports that it supports it.
+  const videoConstraints={facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}};
   const setupTrack=async()=>{trk.current=vid.current?.srcObject?.getVideoTracks?.()[0]||null;const caps=trk.current?.getCapabilities?.()||{},focusModes=caps.focusMode;
    if(Array.isArray(focusModes)&&focusModes.includes('continuous')){try{const c=trk.current.getConstraints?.()||{};await trk.current.applyConstraints({...c,advanced:[...(c.advanced||[]),{focusMode:'continuous'}]})}catch{}}
   };
