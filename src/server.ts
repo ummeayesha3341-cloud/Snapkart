@@ -5,9 +5,11 @@ import helmet from "@fastify/helmet";
 import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { db } from "./db.js";
 import { requireAdmin, requireAuth } from "./auth.js";
 import { paymentProvider } from "./payments.js";
+import { normalizeCategory } from "./categories.js";
 
 const app = Fastify({ logger: true });
 const port = Number(process.env.PORT ?? 3000);
@@ -75,8 +77,30 @@ app.get("/auth/me", { preHandler: requireAuth }, async (request, reply) => {
 });
 
 app.get("/products", async (request) => {
-  const query = z.object({ q: z.string().trim().max(120).optional(), barcode: z.string().trim().max(80).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20) }).parse(request.query);
-  const where = { active: true, ...(query.barcode ? { barcode: query.barcode } : {}), ...(query.q ? { name: { contains: query.q, mode: "insensitive" as const } } : {}) };
+  const query = z.object({ q: z.string().trim().max(120).optional(), category: z.string().trim().min(1).max(120).optional(), barcode: z.string().trim().max(80).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20) }).parse(request.query);
+  const filters: Prisma.ProductWhereInput[] = [];
+  if (query.q) filters.push({ name: { contains: query.q, mode: "insensitive" } });
+  if (query.category) {
+    // Resolve against the category values actually present in the catalog. This
+    // supports case, spacing, underscore, hyphen, singular/plural and aisle aliases
+    // without loading or hardcoding category-specific product lists.
+    const storedCategories = await db.product.findMany({
+      where: { active: true, category: { not: null } },
+      select: { category: true },
+      distinct: ["category"],
+    });
+    const wanted = normalizeCategory(query.category);
+    const matches = [...new Set(storedCategories
+      .map(({ category }) => category)
+      .filter((category): category is string => category !== null)
+      .filter((category) => normalizeCategory(category) === wanted))];
+    filters.push({ category: { in: matches } });
+  }
+  const where: Prisma.ProductWhereInput = {
+    active: true,
+    ...(query.barcode ? { barcode: query.barcode } : {}),
+    ...(filters.length ? { AND: filters } : {}),
+  };
   const [items, total] = await Promise.all([db.product.findMany({ where, orderBy: { name: "asc" }, skip: (query.page - 1) * query.limit, take: query.limit }), db.product.count({ where })]);
   return { items, page: query.page, limit: query.limit, total };
 });
