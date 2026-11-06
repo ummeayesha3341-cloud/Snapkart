@@ -24,6 +24,7 @@ export default function Admin(){
  const field=(form,setter,key,label,type='text',props={})=>{if(typeof type==='object'){props=type;type='text'}return <Input label={label} type={type} value={form[key]??''} onChange={e=>setter({...form,[key]:e.target.value})} {...props}/>};
  const createProduct=async e=>{e.preventDefault();setSaving(true);try{await api.adminCreateProduct({...createForm,priceMinor:Math.round(Number(createForm.price)*100),stock:Number(createForm.stock),currency:createForm.currency.toUpperCase()});setCreateForm(blankProduct);setShowCreate(false);notify('Product created');await Promise.all([loadProducts(),loadSummary()])}catch(err){notify(err.message,true)}finally{setSaving(false)}};
  const saveProduct=async e=>{e.preventDefault();setSaving(true);try{await api.adminUpdateProduct(editing,{...editForm,priceMinor:Math.round(Number(editForm.price)*100),currency:editForm.currency.toUpperCase()});setEditing(null);notify('Product updated');await loadProducts()}catch(err){notify(err.message,true)}finally{setSaving(false)}};
+ const collectCash=async id=>{setSaving(true);try{await api.adminCollectCash(id);notify('Cash payment recorded');await Promise.all([loadOrders(),loadSummary()])}catch(err){notify(err.message,true)}finally{setSaving(false)}};
  const adjustStock=async e=>{e.preventDefault();if(!adjusting)return;setSaving(true);try{await api.adminAdjustStock(adjusting,{delta:Number(delta),reason});setAdjusting(null);setDelta('');setReason('');notify('Inventory updated');await Promise.all([loadProducts(),loadSummary()])}catch(err){notify(err.message,true)}finally{setSaving(false)}};
  const startEdit=p=>{setEditing(p.id);setEditForm({barcode:p.barcode,name:p.name,description:p.description||'',category:p.category||'',brand:p.brand||'',supplier:p.supplier||'',price:moneyValue(p),currency:p.currency,active:p.active})};
 
@@ -84,6 +85,7 @@ export default function Admin(){
     <div className="row sp"><div><h3 className="h2">{shortId(o.id)}</h3><p className="mut">{when(o.createdAt)}</p></div><StatusBadge s={o.payment?.provider==='mock'?'NOT_COLLECTED':o.payment?.status||o.status}/></div>
     <p><strong>{clean(o.user?.name)}</strong><br/><span className="mut">{clean(o.user?.email)}</span></p>
     <div className="row sp"><span className="mut">{o.items?.reduce((n,i)=>n+i.quantity,0)||0} items</span><Price minor={o.subtotalMinor} cur={o.currency}/></div>
+    {o.payment?.provider==='cash_on_delivery'&&o.payment.status==='PENDING'&&<Button variant="sec2" loading={saving} onClick={()=>collectCash(o.id)}>Mark cash received</Button>}
    </article>)}</div>}
    <div className="row sp" style={{marginTop:14}}><Button variant="sec2" disabled={orderPage<=1||loadingOrders} onClick={()=>loadOrders(orderPage-1)}>Previous</Button><span className="mut">Page {orderPage} · {orderTotal} orders</span><Button variant="sec2" disabled={orderPage*20>=orderTotal||loadingOrders} onClick={()=>loadOrders(orderPage+1)}>Next</Button></div>
   </section>}

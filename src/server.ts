@@ -8,7 +8,6 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { db } from "./db.js";
 import { requireAdmin, requireAuth } from "./auth.js";
-import { paymentProvider } from "./payments.js";
 import { normalizeCategory } from "./categories.js";
 
 const app = Fastify({ logger: true });
@@ -144,6 +143,10 @@ app.delete("/cart/items/:id", { preHandler: requireAuth }, async (request, reply
 });
 
 app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
+  const body = z.object({ paymentMethod: z.enum(["CASH", "UPI", "CARD"]).default("CASH") }).parse(request.body ?? {});
+  if (body.paymentMethod !== "CASH") {
+    return reply.code(503).send({ error: "ONLINE_PAYMENTS_NOT_CONFIGURED", message: "Online payments are unavailable until a payment gateway is configured." });
+  }
   const key = request.headers["idempotency-key"];
   if (typeof key !== "string" || key.length < 8 || key.length > 128) return reply.code(400).send({ error: "IDEMPOTENCY_KEY_REQUIRED" });
   const existing = await db.order.findUnique({ where: { userId_idempotencyKey: { userId: request.user.id, idempotencyKey: key } }, include: { items: true, payment: true } });
@@ -157,24 +160,11 @@ app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
       if (changed.count !== 1) throw Object.assign(new Error(`Insufficient stock for ${item.product.name}`), { statusCode: 409, code: "INSUFFICIENT_STOCK" });
     }
     const subtotalMinor = cart.items.reduce((sum, item) => sum + item.product.priceMinor * item.quantity, 0);
-    const created = await tx.order.create({ data: { userId: request.user.id, idempotencyKey: key, subtotalMinor, currency: cart.items[0]!.product.currency, items: { create: cart.items.map(({ product, quantity }) => ({ productId: product.id, barcode: product.barcode, productName: product.name, unitPriceMinor: product.priceMinor, quantity })) }, payment: { create: { provider: paymentProvider.name, amountMinor: subtotalMinor, currency: cart.items[0]!.product.currency } } }, include: { items: true, payment: true } });
+    const created = await tx.order.create({ data: { userId: request.user.id, idempotencyKey: key, subtotalMinor, currency: cart.items[0]!.product.currency, items: { create: cart.items.map(({ product, quantity }) => ({ productId: product.id, barcode: product.barcode, productName: product.name, unitPriceMinor: product.priceMinor, quantity })) }, payment: { create: { provider: "cash_on_delivery", amountMinor: subtotalMinor, currency: cart.items[0]!.product.currency } } }, include: { items: true, payment: true } });
     await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
     return created;
   }, { isolationLevel: "Serializable" });
-  try {
-    const result = await paymentProvider.charge({ orderId: order.id, amountMinor: order.subtotalMinor, currency: order.currency });
-    const updated = await db.$transaction(async (tx) => {
-      await tx.payment.update({ where: { orderId: order.id }, data: { status: result.succeeded ? "SUCCEEDED" : "FAILED", providerReference: result.reference } });
-      if (!result.succeeded) {
-        for (const item of order.items) await tx.product.update({ where: { id: item.productId }, data: { stock: { increment: item.quantity } } });
-      }
-      return tx.order.update({ where: { id: order.id }, data: { status: result.succeeded ? "PAID" : "PAYMENT_FAILED" }, include: { items: true, payment: true } });
-    });
-    return reply.code(result.succeeded ? 201 : 402).send({ order: updated });
-  } catch (error) {
-    app.log.error(error, "Payment provider call failed");
-    return reply.code(202).send({ order, paymentStatus: "PENDING", message: "Payment result is pending reconciliation" });
-  }
+  return reply.code(201).send({ order, message: "Order placed. Cash is due when the order is handed over." });
 });
 app.get("/orders", { preHandler: requireAuth }, async (request) => {
   const orders = await db.order.findMany({ where: { userId: request.user.id }, include: { items: true, payment: true }, orderBy: { createdAt: "desc" } });
@@ -230,6 +220,23 @@ app.get("/admin/orders", { preHandler: requireAdmin }, async (request) => {
   const where = query.status ? { status: query.status } : {};
   const [items, total] = await Promise.all([db.order.findMany({ where, include: { user: { select: { id: true, email: true, name: true } }, items: true, payment: true }, orderBy: { createdAt: "desc" }, skip: (query.page - 1) * query.limit, take: query.limit }), db.order.count({ where })]);
   return { items, total, page: query.page, limit: query.limit };
+});
+app.post("/admin/orders/:id/collect-cash", { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = idParam.parse(request.params);
+  const result = await db.$transaction(async (tx) => {
+    const order = await tx.order.findUnique({ where: { id }, include: { payment: true } });
+    if (!order) return { kind: "missing" as const };
+    if (order.payment?.provider !== "cash_on_delivery") return { kind: "not_cash" as const };
+    if (order.payment.status === "SUCCEEDED" && order.status === "PAID") return { kind: "ok" as const };
+    if (order.payment.status !== "PENDING" || order.status !== "PENDING_PAYMENT") return { kind: "not_pending" as const };
+    await tx.payment.update({ where: { orderId: id }, data: { status: "SUCCEEDED", providerReference: `cash_${id}` } });
+    await tx.order.update({ where: { id }, data: { status: "PAID" } });
+    return { kind: "ok" as const };
+  });
+  if (result.kind === "missing") return reply.code(404).send({ error: "ORDER_NOT_FOUND" });
+  if (result.kind === "not_cash") return reply.code(409).send({ error: "NOT_CASH_ON_DELIVERY" });
+  if (result.kind === "not_pending") return reply.code(409).send({ error: "ORDER_NOT_PENDING" });
+  return { ok: true };
 });
 
 app.addHook("onClose", async () => db.$disconnect());

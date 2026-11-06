@@ -90,7 +90,7 @@ The frontend can display a subtotal by formatting `subtotalMinor` using the item
 
 ### Order
 
-Checkout returns `{ "order": { ... } }`. The order includes `id`, `status`, `subtotalMinor`, `currency`, `createdAt`, item snapshots, and a payment object. The current mock payment provider normally returns `status: "PAID"` and payment `status: "SUCCEEDED"`.
+Checkout accepts `{ "paymentMethod": "CASH" }` and returns `{ "order", "message" }`. Cash orders are created as `PENDING_PAYMENT`, with `payment.provider: "cash_on_delivery"` and payment `status: "PENDING"`; the cart is cleared and stock is reserved. An admin marks the payment received after cash is collected. UPI and card methods return `503 ONLINE_PAYMENTS_NOT_CONFIGURED` until a real gateway is configured.
 
 ## Endpoints by screen
 
@@ -100,13 +100,13 @@ Checkout returns `{ "order": { ... } }`. The order includes `id`, `status`, `sub
 | Register | `POST /auth/register` | No | Body: `{ "email", "password", "name" }`; returns `{ "user", "token" }` |
 | Sign in | `POST /auth/login` | No | Body: `{ "email", "password" }`; returns `{ "user", "token" }` |
 | Current account | `GET /auth/me` | Yes | Returns `{ "user" }` |
-| Browse/search catalog | `GET /products?q=&page=1&limit=20` | No | Returns `{ "items", "page", "limit", "total" }` |
+| Browse/search catalog | `GET /products?q=&category=&page=1&limit=20` | No | Returns `{ "items", "page", "limit", "total" }`. `q` searches product names; optional `category` filters by normalized stored category and common aisle aliases. Both filters combine with AND. |
 | Look up scanned code | `GET /products/barcode/:barcode` | No | Returns `{ "product" }` |
 | View cart | `GET /cart` | Yes | Returns cart object directly |
 | Add scanned product | `POST /cart/items` | Yes | Body: `{ "barcode": "SNAPMOCK0001", "quantity": 1 }`; returns updated cart directly |
 | Change quantity | `PATCH /cart/items/:cartItemId` | Yes | Body: `{ "quantity": 2 }`; returns `{ "ok": true }`. Refresh `GET /cart` after the update. |
 | Remove item | `DELETE /cart/items/:cartItemId` | Yes | Returns HTTP `204` with no body |
-| Pay/checkout | `POST /checkout` | Yes | Header: `Idempotency-Key: <unique value of 8–128 chars>`; returns `{ "order" }` |
+| Place cash order | `POST /checkout` | Yes | Header: `Idempotency-Key: <unique value of 8–128 chars>`; body `{ "paymentMethod": "CASH" }`; returns `{ "order", "message" }` |
 | Order history | `GET /orders` | Yes | Returns `{ "items": [...] }` |
 | Order details | `GET /orders/:orderId` | Yes | Returns `{ "order" }` |
 
@@ -120,6 +120,7 @@ The frontend includes an admin dashboard at `/admin`, linked from Profile for us
 | Edit product | `PATCH /admin/products/:productId` | Returns `{ "product" }` |
 | Adjust stock | `POST /admin/products/:productId/inventory-adjustments` | Body: `{ "delta": 5, "reason": "Stock received" }` |
 | Order list | `GET /admin/orders?page=1&limit=20&status=PAID` | `{ "items", "total", "page", "limit" }` |
+| Record cash received | `POST /admin/orders/:orderId/collect-cash` | Marks a pending cash-on-delivery payment as received and the order as paid |
 
 ## Error and empty-state handling
 
@@ -129,12 +130,11 @@ The frontend includes an admin dashboard at `/admin`, linked from Profile for us
 - `409 INSUFFICIENT_STOCK`: explain that the available quantity changed and refresh the product/cart.
 - `400 EMPTY_CART`: do not allow checkout when the cart has no items.
 - `400 IDEMPOTENCY_KEY_REQUIRED`: checkout must send a unique key; reuse the same key if retrying that same checkout request.
-- `402`: payment was declined by the configured provider. The local mock provider normally succeeds.
-- `202`: payment result is pending; show pending status and check order history before retrying payment.
+- `503 ONLINE_PAYMENTS_NOT_CONFIGURED`: UPI and card payments are unavailable until a gateway is integrated and configured.
 
 ## Current scope and integration limits
 
-- The payment provider is simulated. No real payment method or card details are accepted.
+- Cash at hand-off is recorded as pending until an admin confirms receipt. UPI and card payments are not yet connected; the checkout does not collect card details.
 - The backend uses the seeded catalog for exact barcode lookup. It does not call Open Food Facts or another external product database.
 - The admin dashboard requires an operator account promoted to `ADMIN` through a controlled database operation; there is no public admin-promotion endpoint.
 - The seed interprets workbook prices as INR because no currency was specified. Confirm that assumption before using values beyond mock development.

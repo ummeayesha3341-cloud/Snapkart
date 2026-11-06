@@ -3,6 +3,7 @@ import {useApp} from './context/AppContext';
 import {BottomNav,Toast,Logo} from './components/ui';
 import Auth from './screens/Auth';import Home from './screens/Home';import Scan from './screens/Scan';import Cart from './screens/Cart';import Checkout from './screens/Checkout';
 import {Bills,BillDetail} from './screens/Bills';import {Search,Profile,Help,StoreMap} from './screens/Misc';
+import ProductDetail from './screens/ProductDetail';
 import Admin from './screens/Admin';
 const Guard=({children})=>{const {user}=useApp(),loc=useLocation();return user?children:<Navigate to="/login" state={{from:loc}} replace/>};
 const AdminGuard=({children})=>{const {user}=useApp();return !user?<Navigate to="/login" replace/>:user.role==='ADMIN'?children:<Navigate to="/" replace/>};
@@ -13,7 +14,7 @@ export default function App(){
  return <div className="shell"><Toast/><Routes>
   <Route path="/login" element={user?<Navigate to="/" replace/>:<Auth mode="login"/>}/><Route path="/register" element={user?<Navigate to="/" replace/>:<Auth mode="register"/>}/>
   <Route path="/" element={<Guard><Home/></Guard>}/><Route path="/scan" element={<Guard><Scan/></Guard>}/><Route path="/cart" element={<Guard><Cart/></Guard>}/><Route path="/checkout" element={<Guard><Checkout/></Guard>}/>
-  <Route path="/bills" element={<Guard><Bills/></Guard>}/><Route path="/bills/:id" element={<Guard><BillDetail/></Guard>}/><Route path="/search" element={<Guard><Search/></Guard>}/><Route path="/admin" element={<AdminGuard><Admin/></AdminGuard>}/>
+  <Route path="/bills" element={<Guard><Bills/></Guard>}/><Route path="/bills/:id" element={<Guard><BillDetail/></Guard>}/><Route path="/search" element={<Guard><Search/></Guard>}/><Route path="/products/:barcode" element={<Guard><ProductDetail/></Guard>}/><Route path="/admin" element={<AdminGuard><Admin/></AdminGuard>}/>
   <Route path="/profile" element={<Guard><Profile/></Guard>}/><Route path="/help" element={<Guard><Help/></Guard>}/><Route path="/map" element={<Guard><StoreMap/></Guard>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>
   {user&&tabs&&<BottomNav/>}</div>;
 }

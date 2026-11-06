@@ -16,7 +16,7 @@ In a second PowerShell window, run `Set-Location .\frontend`, `npm install`, the
 
 Money uses integer minor units (`priceMinor`: paise for INR). `prisma/mock-products.json` is development-only sample data derived from the supplied workbook. Since the workbook does not state a currency, its prices are treated as INR for this mock import; change that assumption if its creator intended another currency. It includes synthetic scan identifiers (`SNAPMOCK0001`, etc.) because the workbook's UPC values aren't reliable enough to represent real retail barcodes. Make QR labels containing these identifiers to exercise the scan-to-lookup flow, or pass them directly to `GET /products/barcode/:barcode`. The seed command is safe to re-run for those mock identifiers, but it overwrites their current seeded fields. Do not use this catalog or its generated identifiers for real retail checkout.
 
-The local payment adapter returns a simulated success and must be replaced before handling real payments. Never accept card details in this API; use a PCI-compliant provider's hosted/tokenized flow and verify signed webhooks. Admin users should be provisioned out-of-band by an operator; public registration always creates a customer.
+Checkout currently supports cash at hand-off. Cash orders remain pending until an admin records the cash as received. UPI apps and debit/credit cards require a configured payment gateway; the API does not collect or store card details. Use a gateway-hosted checkout and verify its signed payment callbacks before enabling online payments. Admin users should be provisioned out-of-band by an operator; public registration always creates a customer.
 
 ## API overview
 
