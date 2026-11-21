@@ -5,7 +5,7 @@ import {Header,Price,Skeleton,EmptyState,ErrorState,StatusBadge} from '../compon
 import InvoiceQr from '../components/InvoiceQr';
 import {when,dayKey,shortId,clean} from '../utils/format';
 const useLoad=fn=>{const [s,set]=useState({loading:true});const go=useCallback(()=>{set({loading:true});fn().then(d=>set({d}),e=>set({e:e.message}))},[fn]);useEffect(go,[go]);return [s,go]};
-const st=o=>o.payment?.provider==='mock'?'NOT_COLLECTED':o.paymentStatus||o.payment?.status||o.status||'PAID';
+const st=o=>String(o.payment?.provider||'').startsWith('mock_')?'SIMULATED':o.payment?.provider==='mock'?'NOT_COLLECTED':o.paymentStatus||o.payment?.status||o.status||'PAID';
 const tot=o=>o.totalMinor??o.subtotalMinor;
 export function Bills(){
  const nav=useNavigate(),f=useCallback(()=>api.orders(),[]),[s,go]=useLoad(f);

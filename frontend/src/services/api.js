@@ -5,6 +5,7 @@ export class ApiError extends Error{constructor(status,code,message,data){super(
 function friendly(status,d,auth){
  const x=d?.error&&typeof d.error==='object'?d.error:d||{};const c=String(x.code||(typeof d?.error==='string'?d.error:'')).toUpperCase();
  if(status===404&&(c==='PRODUCT_NOT_FOUND'||!c))return {code:'PRODUCT_NOT_FOUND',msg:"This barcode isn't available in the SnapKart catalog. Try scanning again."};
+ if(c==='ONLINE_PAYMENTS_NOT_CONFIGURED')return {code:c,msg:'Test UPI and card payments are not enabled on the backend yet. Set PAYMENT_PROVIDER=mock on the backend and restart it.'};
  if(status===401)return {code:'UNAUTHORIZED',msg:auth?'Your session has expired. Please sign in again.':'Incorrect email or password.'};
  if(status===409&&c.includes('STOCK')){const n=x.available??x.stock??x.details?.available;return {code:'INSUFFICIENT_STOCK',msg:(n!=null?`Only ${n} units are currently available.`:'Not enough stock is available.')+' Your cart has been updated.'}}
  if(status===409)return {code:c||'CONFLICT',msg:'An account with this email already exists.'};
@@ -36,7 +37,7 @@ export const api={
  addItem:(barcode,quantity)=>J('/cart/items',{method:'POST',body:{barcode,quantity}}),
  setQty:(id,quantity)=>J(`/cart/items/${encodeURIComponent(id)}`,{method:'PATCH',body:{quantity}}),
  removeItem:id=>J(`/cart/items/${encodeURIComponent(id)}`,{method:'DELETE'}),
- checkout:(key,paymentMethod)=>req('/checkout',{method:'POST',headers:{'Idempotency-Key':key},body:{paymentMethod}}),
+ checkout:(key,paymentMethod,upiApp)=>req('/checkout',{method:'POST',headers:{'Idempotency-Key':key},body:{paymentMethod,...(upiApp?{upiApp}:{})}}),
  orders:()=>J('/orders'),
  order:id=>J(`/orders/${encodeURIComponent(id)}`),
  adminSummary:()=>J('/admin/summary'),
