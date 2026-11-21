@@ -1,6 +1,9 @@
 import {useState} from 'react';
 import {Link} from 'react-router-dom';
 import {clean} from '../utils/format';
+import imageByProduct from '../data/product-image-map.json';
+
+const imageFor = name => imageByProduct[String(name||'').toLowerCase().replace(/[^a-z0-9]/g,'')];
 
 const toneFor = (product={}) => {
  const c=String(product.category||'').toLowerCase();
@@ -13,7 +16,7 @@ const toneFor = (product={}) => {
 };
 
 export function ProductMedia({product={},className=''}){
- const url=product.imageUrl||product.image||product.imageURL;
+ const url=product.imageUrl||product.image||product.imageURL||imageFor(product.name);
  const [failed,setFailed]=useState(false);
  const tone=toneFor(product);
  return <div className={`product-media tone-${tone} ${className}`} aria-label={clean(product.name||'Product')}>
