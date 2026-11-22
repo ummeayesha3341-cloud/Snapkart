@@ -30,12 +30,18 @@ All request and response bodies are JSON. Protected routes require `Authorizatio
 
 | Area | Endpoints |
 | --- | --- |
-| Auth | Supabase Auth SDK sign-up/sign-in, `GET /auth/me` (Supabase bearer token) |
+| Auth | Supabase Auth SDK sign-up/sign-in/password recovery; admin TOTP MFA enforced by the API; `GET /auth/me` |
 | Catalog / barcode lookup | `GET /products?q=&page=&limit=`, `GET /products/barcode/:barcode` |
 | Cart | `GET /cart`, `POST /cart/items` (`barcode`, `quantity`), `PATCH /cart/items/:id` (`quantity`), `DELETE /cart/items/:id` |
-| Checkout / history | `POST /checkout` (requires `Idempotency-Key`), `GET /orders`, `GET /orders/:id` |
-| Admin | `GET /admin/summary`, `GET /admin/inventory`, `POST /admin/products`, `PATCH /admin/products/:id`, `POST /admin/products/:id/inventory-adjustments`, `GET /admin/orders` |
+| Checkout / history | `POST /checkout` (requires `Idempotency-Key`), `GET /orders`, `GET /orders/:id`, `POST /orders/:id/returns`, `GET /orders/:id/returns` |
+| Admin | `GET /admin/summary`, `GET /admin/analytics/sales`, `GET /admin/analytics/demand`, `GET /admin/returns`, `POST /admin/returns/:id/review`, `POST /admin/returns/:id/complete`, inventory and order endpoints |
 
-Checkout revalidates inventory and snapshots product names/prices into order lines in a serializable database transaction. Orders are scoped to their customer on customer routes. Inventory corrections record the admin, delta, resulting quantity, reason, and timestamp. Payment reconciliation/webhooks, tax, discounts, store/location scoping, and shipment/fulfilment are follow-on integrations.
+Checkout revalidates inventory and snapshots product names/prices into order lines in a serializable database transaction. Orders are scoped to their customer on customer routes. Inventory corrections record the admin, delta, resulting quantity, reason, and timestamp. Admin APIs require a Supabase AAL2 session. Payment reconciliation/webhooks for real online payments, tax, discounts, store/location scoping, and shipment/fulfilment are follow-on integrations.
 
 The React frontend lives in `frontend/`. It includes customer shopping screens and an admin dashboard at `/admin`; the dashboard is linked from Profile for `ADMIN` accounts. Promote the first operator to `ADMIN` through a controlled database operation before using admin features; public registration cannot assign roles.
+
+## Readiness checks
+
+Run `npm run test:api` for in-process API/security checks and `npm run test:e2e` for mocked browser flows. `npm run test:load` performs a short read-only smoke load against localhost by default; remote targets require an explicit opt-in. Configure `METRICS_TOKEN` on the server to expose protected Prometheus metrics at `/metrics` for request/error counts and latency. See [docs/OPERATIONS.md](docs/OPERATIONS.md) for load-test guardrails, monitoring, backup policy, and recovery steps. These checks do not make the mock catalog or payment flow suitable for real-store checkout.
+
+Admin sales/demand analytics, customer return requests, administrator review/refund recording, Supabase TOTP MFA enforcement for admins, and email password recovery are implemented. Their initial policies and live-payment limitations are recorded in [docs/OPERATIONS.md](docs/OPERATIONS.md). Apply the new Prisma migration before deploying these endpoints.

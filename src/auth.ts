@@ -3,7 +3,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { Prisma } from "@prisma/client";
 import { db } from "./db.js";
 
-export type AuthUser = { id: string; email: string; role: "CUSTOMER" | "ADMIN" };
+export type AuthUser = { id: string; email: string; role: "CUSTOMER" | "ADMIN"; aal: "aal1" | "aal2" | null };
 declare module "fastify" {
   interface FastifyRequest { user: AuthUser }
 }
@@ -13,6 +13,15 @@ const supabaseKey = process.env.SUPABASE_PUBLISHABLE_KEY;
 const supabase: SupabaseClient | null = supabaseUrl && supabaseKey
   ? createClient(supabaseUrl, supabaseKey, { auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false } })
   : null;
+
+function verifiedAalFromJwt(token: string): AuthUser["aal"] {
+  try {
+    // requireAuth calls Supabase getUser(token) before this function, so this claim
+    // comes from a JWT whose signature and expiry Supabase has just verified.
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { aal?: string };
+    return payload.aal === "aal1" || payload.aal === "aal2" ? payload.aal : null;
+  } catch { return null; }
+}
 
 async function getOrCreateAppUser(identity: SupabaseUser) {
   const email = identity.email?.trim().toLowerCase();
@@ -63,7 +72,7 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
   if (error || !data.user) return reply.code(401).send({ error: "UNAUTHORIZED", message: "Your session is invalid or expired" });
   try {
     const user = await getOrCreateAppUser(data.user);
-    request.user = { id: user.id, email: user.email, role: user.role };
+    request.user = { id: user.id, email: user.email, role: user.role, aal: verifiedAalFromJwt(token) };
   } catch (error) {
     const authError = error as Error & { statusCode?: number; code?: string };
     if (authError.statusCode && authError.code) return reply.code(authError.statusCode).send({ error: authError.code, message: authError.message });
@@ -75,6 +84,7 @@ export async function requireAdmin(request: FastifyRequest, reply: FastifyReply)
   const authResult = await requireAuth(request, reply);
   if (authResult) return authResult;
   if (request.user.role !== "ADMIN") return reply.code(403).send({ error: "FORBIDDEN", message: "Administrator access required" });
+  if (request.user.aal !== "aal2") return reply.code(403).send({ error: "MFA_REQUIRED", message: "Verify your authenticator code to continue as an administrator" });
 }
 
 export async function requireCustomer(request: FastifyRequest, reply: FastifyReply) {

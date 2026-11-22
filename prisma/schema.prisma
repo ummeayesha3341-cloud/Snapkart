@@ -27,6 +27,41 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum DemandEventType {
+  SCAN
+  CART_ADD
+  CART_REMOVE
+  PURCHASE
+  RETURN
+  STOCKOUT_ATTEMPT
+}
+
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum ReturnDisposition {
+  RESTOCK
+  QUARANTINE
+  DISCARD
+}
+
+enum RefundStatus {
+  NOT_STARTED
+  SIMULATED
+  CASH_PAID_OUT
+}
+
+enum ReturnAuditAction {
+  REQUESTED
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -38,6 +73,9 @@ model User {
   updatedAt    DateTime @updatedAt
   cart         Cart?
   orders       Order[]
+  returnRequests ReturnRequest[] @relation("ReturnCustomer")
+  reviewedReturns ReturnRequest[] @relation("ReturnReviewer")
+  returnAuditEvents ReturnAuditEvent[]
 }
 
 model Product {
@@ -57,6 +95,7 @@ model Product {
   updatedAt   DateTime @updatedAt
   cartItems   CartItem[]
   orderItems  OrderItem[]
+  demandEvents DemandEvent[]
 
   @@index([name])
   @@index([active, barcode])
@@ -94,6 +133,7 @@ model Order {
   user           User        @relation(fields: [userId], references: [id])
   items          OrderItem[]
   payment        Payment?
+  returnRequests ReturnRequest[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
@@ -110,6 +150,9 @@ model OrderItem {
   quantity       Int
   order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product        Product @relation(fields: [productId], references: [id])
+  returnItems    ReturnItem[]
+
+  @@index([orderId])
 }
 
 model Payment {
@@ -123,6 +166,70 @@ model Payment {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
   order             Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status, provider])
+}
+
+model DemandEvent {
+  id        String          @id @default(cuid())
+  productId String
+  type      DemandEventType
+  quantity  Int             @default(1)
+  createdAt DateTime        @default(now())
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, type, createdAt])
+  @@index([createdAt])
+}
+
+model ReturnRequest {
+  id                String            @id @default(cuid())
+  orderId           String
+  customerUserId    String
+  reviewerAdminId   String?
+  status            ReturnStatus      @default(REQUESTED)
+  reason            String
+  unusedAttested    Boolean           @default(false)
+  adminNote         String?
+  disposition       ReturnDisposition?
+  refundStatus      RefundStatus      @default(NOT_STARTED)
+  refundAmountMinor Int               @default(0)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  order             Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer          User              @relation("ReturnCustomer", fields: [customerUserId], references: [id])
+  reviewer          User?             @relation("ReturnReviewer", fields: [reviewerAdminId], references: [id])
+  items             ReturnItem[]
+  auditEvents       ReturnAuditEvent[]
+
+  @@index([customerUserId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ReturnItem {
+  id              String        @id @default(cuid())
+  returnRequestId String
+  orderItemId     String
+  quantity        Int
+  unitPriceMinor  Int
+  returnRequest   ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  orderItem       OrderItem     @relation(fields: [orderItemId], references: [id])
+
+  @@unique([returnRequestId, orderItemId])
+  @@index([orderItemId])
+}
+
+model ReturnAuditEvent {
+  id              String           @id @default(cuid())
+  returnRequestId String
+  actorUserId     String
+  action          ReturnAuditAction
+  note            String?
+  createdAt       DateTime         @default(now())
+  returnRequest   ReturnRequest    @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  actor           User             @relation(fields: [actorUserId], references: [id])
+
+  @@index([returnRequestId, createdAt])
 }
 
 model InventoryAdjustment {

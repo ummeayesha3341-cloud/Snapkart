@@ -1,0 +1,17 @@
+import {useCallback,useEffect,useState} from 'react';
+import {api} from '../services/api';
+import {Button,Input,Price} from '../components/ui';
+import {clean} from '../utils/format';
+
+const dateDaysAgo=n=>{const d=new Date();d.setDate(d.getDate()-n);return d.toISOString().slice(0,10)};
+const number=n=>new Intl.NumberFormat('en-IN').format(n||0);
+export default function AdminAnalytics(){
+ const [from,setFrom]=useState(dateDaysAgo(29)),[to,setTo]=useState(new Date().toISOString().slice(0,10)),[interval,setInterval]=useState('day'),[sales,setSales]=useState(null),[demand,setDemand]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const load=useCallback(async()=>{setBusy(true);setError('');try{const [s,d]=await Promise.all([api.adminSales(from,to,interval),api.adminDemand(`${from}T00:00:00.000Z`,`${to}T23:59:59.999Z`)]);setSales(s);setDemand(d)}catch(e){setError(e.message)}finally{setBusy(false)}},[from,to,interval]);
+ useEffect(()=>{load()},[load]);
+ return <section className="gap"><h2 className="h1">Sales and product demand</h2><div className="row" style={{flexWrap:'wrap'}}><Input label="From" type="date" value={from} onChange={e=>setFrom(e.target.value)}/><Input label="To" type="date" value={to} onChange={e=>setTo(e.target.value)}/><label className="gap">Group sales<select className="inp" value={interval} onChange={e=>setInterval(e.target.value)}><option value="day">By day</option><option value="week">By week</option><option value="month">By month</option></select></label><Button variant="sec2" onClick={load} loading={busy}>Refresh</Button></div>
+ {error&&<p role="alert" className="ferr">{error}</p>}<p className="mut">Sales use paid orders and subtract completed returns. Mock UPI/card amounts are reported separately as simulated. Demand signals count scans, cart quantities, purchases and returns; scans are not sales.</p>
+ <h3 className="h2">Sales trend · {sales?.from||'—'} to {sales?.to||'—'}</h3><div className="gap">{!sales?.items?.length?<div className="card mut">No paid orders in this period.</div>:sales.items.map(row=><article className="card gap" key={`${row.date}-${row.currency}`}><div className="row sp"><b>{row.date} · {row.currency}</b><span>{number(row.orders)} paid orders</span></div><div className="row sp"><span className="mut">Gross paid</span><Price minor={row.grossPaidMinor} cur={row.currency}/></div><div className="row sp"><span className="mut">Refunds</span><Price minor={row.refundMinor} cur={row.currency}/></div><div className="row sp"><b>Net sales</b><Price minor={row.netSalesMinor} cur={row.currency}/></div>{row.simulatedGrossMinor>0&&<p className="mut">Simulated payment volume: {(row.simulatedGrossMinor-row.simulatedRefundMinor)/100} {row.currency} · excluded from real sales.</p>}</article>)}</div>
+  <h3 className="h2" style={{marginTop:16}}>Product demand</h3><div className="gap">{!demand?.items?.length?<div className="card mut">No demand events in this period.</div>:demand.items.map(row=><article className="card gap" key={row.product.id}><div className="row sp"><b>{clean(row.product.name)}</b><span className="mut">Current stock: {row.product.stock}</span></div><p className="mut">Successful barcode lookups {number(row.scans)} · Cart adds {number(row.cartAdds)} · Removed {number(row.cartRemovals)}</p><p>Purchased {number(row.purchasedUnits)} units · Returned {number(row.returnedUnits)} units · Attempts while out of stock {number(row.stockoutAttempts)}</p></article>)}</div>
+ </section>;
+}

@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -11,8 +12,23 @@ import { requireAdmin, requireAuth, requireCustomer } from "./auth.js";
 import { normalizeCategory } from "./categories.js";
 import { paymentProvider } from "./payments.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: { redact: ["req.headers.authorization", "req.headers.cookie", "req.headers.set-cookie"] } });
 const port = Number(process.env.PORT ?? 3000);
+const requestMetrics = new Map<string, { count: number; errors: number; sumSeconds: number; buckets: number[] }>();
+const latencyBuckets = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5];
+app.addHook("onResponse", async (request, reply) => {
+  const route = request.routeOptions.url ?? "unmatched";
+  if (route === "/metrics") return;
+  const key = JSON.stringify([request.method, route, reply.statusCode]);
+  const elapsed = reply.elapsedTime / 1000;
+  const entry = requestMetrics.get(key) ?? { count: 0, errors: 0, sumSeconds: 0, buckets: latencyBuckets.map(() => 0) };
+  entry.count += 1;
+  if (reply.statusCode >= 500) entry.errors += 1;
+  entry.sumSeconds += elapsed;
+  latencyBuckets.forEach((bound, index) => { if (elapsed <= bound) entry.buckets[index] = (entry.buckets[index] ?? 0) + 1; });
+  requestMetrics.set(key, entry);
+  if (reply.statusCode >= 500 || elapsed >= 1) request.log.warn({ statusCode: reply.statusCode, elapsedMs: Math.round(reply.elapsedTime), route }, "API request needs attention");
+});
 await app.register(helmet);
 await app.register(cors, { origin: (process.env.CORS_ORIGIN ?? "http://localhost:5173").split(",") });
 await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
@@ -26,8 +42,19 @@ app.setErrorHandler((error, _request, reply) => {
 });
 
 const idParam = z.object({ id: z.string().min(1) });
+const isMockProvider = (provider: string) => provider === "mock" || provider.startsWith("mock_");
 const safeUser = (user: { id: string; email: string; name: string; role: string }) => ({ id: user.id, email: user.email, name: user.name, role: user.role });
 const newReceiptToken = () => randomBytes(32).toString("base64url");
+const recordDemand = async (productId: string, type: "SCAN" | "CART_ADD" | "CART_REMOVE" | "PURCHASE" | "RETURN" | "STOCKOUT_ATTEMPT", quantity = 1, client: { demandEvent: typeof db.demandEvent } = db) => {
+  try { await client.demandEvent.create({ data: { productId, type, quantity } }); }
+  catch (error) { app.log.warn({ err: error, productId, type }, "Could not record product demand event"); }
+};
+function dayBucket(date: Date, interval: "day" | "week" | "month") {
+  const day = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  if (interval === "week") day.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7));
+  if (interval === "month") day.setUTCDate(1);
+  return day.toISOString().slice(0, 10);
+}
 async function ensureReceiptToken(orderId: string) {
   const token = newReceiptToken();
   await db.order.updateMany({ where: { id: orderId, receiptToken: null }, data: { receiptToken: token } });
@@ -56,6 +83,21 @@ const cartView = (cart: any) => ({
 });
 
 app.get("/health", async () => ({ status: "ok" }));
+app.get("/metrics", async (request, reply) => {
+  const token = process.env.METRICS_TOKEN;
+  if (!token || request.headers.authorization !== `Bearer ${token}`) return reply.code(404).send({ error: "NOT_FOUND" });
+  reply.type("text/plain; version=0.0.4; charset=utf-8");
+  const lines = ["# HELP snapkart_http_requests_total Total HTTP requests by method, route, and status.", "# TYPE snapkart_http_requests_total counter", "# HELP snapkart_http_errors_total HTTP 5xx responses by method and route.", "# TYPE snapkart_http_errors_total counter", "# HELP snapkart_http_request_duration_seconds Request latency in seconds.", "# TYPE snapkart_http_request_duration_seconds histogram"];
+  for (const [key, value] of requestMetrics) {
+    const [method, route, status] = JSON.parse(key) as [string, string, number];
+    const labels = `method=${JSON.stringify(method)},route=${JSON.stringify(route)}`;
+    lines.push(`snapkart_http_requests_total{${labels},status=${JSON.stringify(String(status))}} ${value.count}`);
+    if (status >= 500) lines.push(`snapkart_http_errors_total{${labels}} ${value.errors}`);
+    latencyBuckets.forEach((bound, index) => lines.push(`snapkart_http_request_duration_seconds_bucket{${labels},le=${JSON.stringify(String(bound))}} ${value.buckets[index]}`));
+    lines.push(`snapkart_http_request_duration_seconds_bucket{${labels},le="+Inf"} ${value.count}`, `snapkart_http_request_duration_seconds_sum{${labels}} ${value.sumSeconds}`, `snapkart_http_request_duration_seconds_count{${labels}} ${value.count}`);
+  }
+  return `${lines.join("\n")}\n`;
+});
 app.get("/auth/me", { preHandler: requireAuth }, async (request, reply) => {
   const user = await db.user.findUnique({ where: { id: request.user.id } });
   if (!user) return reply.code(404).send({ error: "USER_NOT_FOUND" });
@@ -94,6 +136,8 @@ app.get("/products/barcode/:barcode", async (request, reply) => {
   const { barcode } = z.object({ barcode: z.string().min(1).max(80) }).parse(request.params);
   const product = await db.product.findFirst({ where: { barcode, active: true } });
   if (!product) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
+  await recordDemand(product.id, "SCAN");
+  if (product.stock === 0) await recordDemand(product.id, "STOCKOUT_ATTEMPT");
   return { product: publicProduct(product) };
 });
 
@@ -108,8 +152,12 @@ app.post("/cart/items", { preHandler: requireCustomer }, async (request, reply) 
   if (!product) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
   const cart = await db.cart.upsert({ where: { userId: request.user.id }, create: { userId: request.user.id }, update: {} });
   const current = await db.cartItem.findUnique({ where: { cartId_productId: { cartId: cart.id, productId: product.id } } });
-  if (product.stock < body.quantity + (current?.quantity ?? 0)) return reply.code(409).send({ error: "INSUFFICIENT_STOCK" });
+  if (product.stock < body.quantity + (current?.quantity ?? 0)) {
+    await recordDemand(product.id, "STOCKOUT_ATTEMPT", body.quantity);
+    return reply.code(409).send({ error: "INSUFFICIENT_STOCK" });
+  }
   await db.cartItem.upsert({ where: { cartId_productId: { cartId: cart.id, productId: product.id } }, create: { cartId: cart.id, productId: product.id, quantity: body.quantity }, update: { quantity: { increment: body.quantity } } });
+  await recordDemand(product.id, "CART_ADD", body.quantity);
   const fresh = await db.cart.findUniqueOrThrow({ where: { id: cart.id }, include: { items: { include: { product: true } } } });
   return reply.code(200).send(cartView(fresh));
 });
@@ -120,12 +168,16 @@ app.patch("/cart/items/:id", { preHandler: requireCustomer }, async (request, re
   if (!item) return reply.code(404).send({ error: "CART_ITEM_NOT_FOUND" });
   if (quantity > item.product.stock) return reply.code(409).send({ error: "INSUFFICIENT_STOCK" });
   await db.cartItem.update({ where: { id }, data: { quantity } });
+  if (quantity > item.quantity) await recordDemand(item.productId, "CART_ADD", quantity - item.quantity);
+  else if (quantity < item.quantity) await recordDemand(item.productId, "CART_REMOVE", item.quantity - quantity);
   return { ok: true };
 });
 app.delete("/cart/items/:id", { preHandler: requireCustomer }, async (request, reply) => {
   const { id } = idParam.parse(request.params);
-  const result = await db.cartItem.deleteMany({ where: { id, cart: { userId: request.user.id } } });
-  if (!result.count) return reply.code(404).send({ error: "CART_ITEM_NOT_FOUND" });
+  const item = await db.cartItem.findFirst({ where: { id, cart: { userId: request.user.id } } });
+  if (!item) return reply.code(404).send({ error: "CART_ITEM_NOT_FOUND" });
+  await db.cartItem.delete({ where: { id } });
+  await recordDemand(item.productId, "CART_REMOVE", item.quantity);
   return reply.code(204).send();
 });
 
@@ -175,6 +227,7 @@ app.post("/checkout", { preHandler: requireCustomer }, async (request, reply) =>
       amountMinor: subtotalMinor, currency: created.currency,
     } });
     await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+    await tx.demandEvent.createMany({ data: cart.items.map((item) => ({ productId: item.productId, type: "PURCHASE" as const, quantity: item.quantity })) });
     return tx.order.findUniqueOrThrow({ where: { id: created.id }, include: { items: true, payment: true } });
   }, { isolationLevel: "Serializable" });
   return reply.code(201).send({
@@ -199,6 +252,55 @@ app.get("/orders/:id", { preHandler: requireCustomer }, async (request, reply) =
   }
   return { order };
 });
+app.post("/orders/:id/returns", { preHandler: requireCustomer }, async (request, reply) => {
+  const { id: orderId } = idParam.parse(request.params);
+  const body = z.object({
+    reason: z.string().trim().min(3).max(500),
+    unusedAttested: z.literal(true),
+    items: z.array(z.object({ orderItemId: z.string().min(1), quantity: z.number().int().min(1).max(99) })).min(1).max(50),
+  }).parse(request.body);
+  if (new Set(body.items.map((item) => item.orderItemId)).size !== body.items.length) return reply.code(400).send({ error: "DUPLICATE_RETURN_ITEM" });
+  const result = await db.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id: orderId, userId: request.user.id }, include: { payment: true, items: true } });
+    if (!order) return { kind: "missing" as const };
+    if (order.status !== "PAID" || order.payment?.status !== "SUCCEEDED") return { kind: "not_paid" as const };
+    if (order.payment.provider !== "cash_on_delivery" && !isMockProvider(order.payment.provider)) return { kind: "refund_unavailable" as const };
+    const age = Date.now() - order.createdAt.getTime();
+    if (age < 0 || age > 30 * 24 * 60 * 60 * 1000) return { kind: "expired" as const };
+    const byId = new Map(order.items.map((item) => [item.id, item]));
+    const ids = body.items.map((item) => item.orderItemId);
+    const existing = await tx.returnItem.findMany({ where: { orderItemId: { in: ids }, returnRequest: { is: { status: { not: "REJECTED" } } } } });
+    for (const requested of body.items) {
+      const orderItem = byId.get(requested.orderItemId);
+      if (!orderItem) return { kind: "invalid_item" as const };
+      const alreadyRequested = existing.filter((item) => item.orderItemId === requested.orderItemId).reduce((sum, item) => sum + item.quantity, 0);
+      if (alreadyRequested + requested.quantity > orderItem.quantity) return { kind: "quantity" as const };
+    }
+    const created = await tx.returnRequest.create({
+      data: {
+        orderId, customerUserId: request.user.id, reason: body.reason, unusedAttested: true,
+        items: { create: body.items.map((item) => ({ orderItemId: item.orderItemId, quantity: item.quantity, unitPriceMinor: byId.get(item.orderItemId)!.unitPriceMinor })) },
+        auditEvents: { create: { actorUserId: request.user.id, action: "REQUESTED", note: body.reason } },
+      },
+      include: { items: { include: { orderItem: true } }, auditEvents: true },
+    });
+    return { kind: "created" as const, request: created };
+  }, { isolationLevel: "Serializable" });
+  if (result.kind === "missing") return reply.code(404).send({ error: "ORDER_NOT_FOUND" });
+  if (result.kind === "not_paid") return reply.code(409).send({ error: "ORDER_NOT_RETURNABLE", message: "Returns can be requested only for paid orders." });
+  if (result.kind === "refund_unavailable") return reply.code(503).send({ error: "REAL_REFUNDS_NOT_CONFIGURED", message: "Return requests for online payments are unavailable until a verified refund integration is configured." });
+  if (result.kind === "expired") return reply.code(409).send({ error: "RETURN_WINDOW_CLOSED", message: "Returns must be requested within 30 days of purchase." });
+  if (result.kind === "invalid_item") return reply.code(400).send({ error: "INVALID_RETURN_ITEM" });
+  if (result.kind === "quantity") return reply.code(409).send({ error: "RETURN_QUANTITY_EXCEEDED" });
+  return reply.code(201).send({ returnRequest: result.request });
+});
+app.get("/orders/:id/returns", { preHandler: requireCustomer }, async (request, reply) => {
+  const { id: orderId } = idParam.parse(request.params);
+  const order = await db.order.findFirst({ where: { id: orderId, userId: request.user.id }, select: { id: true } });
+  if (!order) return reply.code(404).send({ error: "ORDER_NOT_FOUND" });
+  const items = await db.returnRequest.findMany({ where: { orderId, customerUserId: request.user.id }, include: { items: { include: { orderItem: true } }, auditEvents: { orderBy: { createdAt: "asc" } } }, orderBy: { createdAt: "desc" } });
+  return { items };
+});
 app.get("/receipts/:token", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request, reply) => {
   const { token } = z.object({ token: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/) }).parse(request.params);
   const order = await db.order.findUnique({
@@ -211,13 +313,15 @@ app.get("/receipts/:token", { config: { rateLimit: { max: 30, timeWindow: "1 min
   });
   if (!order) return reply.code(404).send({ error: "RECEIPT_NOT_FOUND" });
   const provider = order.payment?.provider ?? "unknown";
-  const isTestPayment = provider.startsWith("mock_");
+  const isTestPayment = isMockProvider(provider);
   const paymentMethod = provider === "cash_on_delivery" ? "Cash at hand-off"
     : provider === "mock_upi" ? "UPI app (test)"
     : provider === "mock_card" ? "Card (test)"
     : "Online payment";
   const paymentStatus = order.payment?.status === "SUCCEEDED"
     ? isTestPayment ? "Test payment successful — no money was charged" : "Paid"
+    : order.payment?.status === "REFUNDED"
+      ? isTestPayment ? "Simulated refund recorded — no money was moved" : "Refund recorded"
     : provider === "cash_on_delivery" ? "Cash due at hand-off" : "Payment pending";
   return {
     receipt: {
@@ -237,12 +341,126 @@ app.get("/receipts/:token", { config: { rateLimit: { max: 30, timeWindow: "1 min
   };
 });
 
-app.get("/admin/summary", { preHandler: requireAdmin }, async () => {
-  const [products, customers, orders, revenue] = await Promise.all([
-    db.product.count({ where: { active: true } }), db.user.count({ where: { role: "CUSTOMER" } }),
-    db.order.count(), db.payment.aggregate({ where: { status: "SUCCEEDED", provider: { notIn: ["mock", "mock_upi", "mock_card"] } }, _sum: { amountMinor: true } }),
+app.get("/admin/analytics/sales", { preHandler: requireAdmin }, async (request, reply) => {
+  const query = z.object({ from: z.coerce.date().optional(), to: z.coerce.date().optional(), interval: z.enum(["day", "week", "month"]).default("day") }).parse(request.query);
+  const start = query.from ? new Date(Date.UTC(query.from.getUTCFullYear(), query.from.getUTCMonth(), query.from.getUTCDate())) : new Date(Date.now() - 29 * 86400000);
+  const endInclusive = query.to ?? new Date();
+  const endExclusive = new Date(Date.UTC(endInclusive.getUTCFullYear(), endInclusive.getUTCMonth(), endInclusive.getUTCDate() + 1));
+  if (start >= endExclusive || endExclusive.getTime() - start.getTime() > 367 * 86400000) return reply.code(400).send({ error: "INVALID_DATE_RANGE", message: "Choose a valid range of up to 366 days." });
+  const orders = await db.order.findMany({
+    where: { status: "PAID", createdAt: { gte: start, lt: endExclusive } },
+    include: { payment: true, items: true, returnRequests: { where: { status: "COMPLETED" }, select: { refundAmountMinor: true } } },
+  });
+  const buckets = new Map<string, { date: string; currency: string; orders: number; grossPaidMinor: number; refundMinor: number; netSalesMinor: number; simulatedGrossMinor: number; simulatedRefundMinor: number }>();
+  for (const order of orders) {
+    if (!order.payment || !["SUCCEEDED", "REFUNDED"].includes(order.payment.status)) continue;
+    const date = dayBucket(order.createdAt, query.interval);
+    const key = `${date}:${order.currency}`;
+    const bucket = buckets.get(key) ?? { date, currency: order.currency, orders: 0, grossPaidMinor: 0, refundMinor: 0, netSalesMinor: 0, simulatedGrossMinor: 0, simulatedRefundMinor: 0 };
+    const gross = order.items.reduce((sum, item) => sum + item.unitPriceMinor * item.quantity, 0);
+    const refunds = order.returnRequests.reduce((sum, item) => sum + item.refundAmountMinor, 0);
+    bucket.orders += 1;
+    if (isMockProvider(order.payment.provider)) {
+      bucket.simulatedGrossMinor += gross;
+      bucket.simulatedRefundMinor += refunds;
+    } else {
+      bucket.grossPaidMinor += gross;
+      bucket.refundMinor += refunds;
+      bucket.netSalesMinor += gross - refunds;
+    }
+    buckets.set(key, bucket);
+  }
+  return { from: start.toISOString().slice(0, 10), to: new Date(endExclusive.getTime() - 86400000).toISOString().slice(0, 10), interval: query.interval, items: [...buckets.values()].sort((a, b) => a.date.localeCompare(b.date) || a.currency.localeCompare(b.currency)) };
+});
+app.get("/admin/analytics/demand", { preHandler: requireAdmin }, async (request, reply) => {
+  const query = z.object({ from: z.coerce.date().optional(), to: z.coerce.date().optional(), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(request.query);
+  const end = query.to ?? new Date();
+  const start = query.from ?? new Date(end.getTime() - 29 * 86400000);
+  if (start >= end || end.getTime() - start.getTime() > 367 * 86400000) return reply.code(400).send({ error: "INVALID_DATE_RANGE", message: "Choose a valid range of up to 366 days." });
+  const groupedEvents = await db.demandEvent.groupBy({ by: ["productId", "type"], where: { createdAt: { gte: start, lte: end } }, _sum: { quantity: true } });
+  const productIds = [...new Set(groupedEvents.map((event) => event.productId))];
+  const products = await db.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, barcode: true, stock: true, active: true } });
+  const byProduct = new Map(products.map((product) => [product.id, { product, scans: 0, cartAdds: 0, cartRemovals: 0, purchasedUnits: 0, returnedUnits: 0, stockoutAttempts: 0 }]));
+  for (const event of groupedEvents) {
+    const row = byProduct.get(event.productId);
+    if (!row) continue;
+    const amount = event._sum.quantity ?? 0;
+    if (event.type === "SCAN") row.scans = amount;
+    if (event.type === "CART_ADD") row.cartAdds = amount;
+    if (event.type === "CART_REMOVE") row.cartRemovals = amount;
+    if (event.type === "PURCHASE") row.purchasedUnits = amount;
+    if (event.type === "RETURN") row.returnedUnits = amount;
+    if (event.type === "STOCKOUT_ATTEMPT") row.stockoutAttempts = amount;
+  }
+  const items = [...byProduct.values()].sort((a, b) => b.purchasedUnits - a.purchasedUnits || b.cartAdds - a.cartAdds || b.scans - a.scans).slice(0, query.limit);
+  return { from: start.toISOString(), to: end.toISOString(), items };
+});
+
+app.get("/admin/returns", { preHandler: requireAdmin }, async (request) => {
+  const query = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), status: z.enum(["REQUESTED", "APPROVED", "REJECTED", "COMPLETED"]).optional() }).parse(request.query);
+  const where = query.status ? { status: query.status } : {};
+  const [items, total] = await Promise.all([
+    db.returnRequest.findMany({ where, include: { order: { select: { id: true, createdAt: true, currency: true, payment: true } }, customer: { select: { id: true, email: true, name: true } }, items: { include: { orderItem: true } }, auditEvents: { include: { actor: { select: { id: true, email: true, name: true } } }, orderBy: { createdAt: "asc" } } }, orderBy: { createdAt: "desc" }, skip: (query.page - 1) * query.limit, take: query.limit }),
+    db.returnRequest.count({ where }),
   ]);
-  return { products, customers, orders, revenueMinor: revenue._sum.amountMinor ?? 0 };
+  return { items, total, page: query.page, limit: query.limit };
+});
+app.post("/admin/returns/:id/review", { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = idParam.parse(request.params);
+  const body = z.object({ decision: z.enum(["APPROVE", "REJECT"]), note: z.string().trim().max(500).optional() }).parse(request.body);
+  const current = await db.returnRequest.findUnique({ where: { id }, select: { status: true } });
+  if (!current) return reply.code(404).send({ error: "RETURN_NOT_FOUND" });
+  if (current.status !== "REQUESTED") return reply.code(409).send({ error: "RETURN_ALREADY_REVIEWED" });
+  const status = body.decision === "APPROVE" ? "APPROVED" : "REJECTED";
+  const updated = await db.$transaction(async (tx) => {
+    const changed = await tx.returnRequest.updateMany({ where: { id, status: "REQUESTED" }, data: { status, reviewerAdminId: request.user.id, adminNote: body.note } });
+    if (!changed.count) return null;
+    await tx.returnAuditEvent.create({ data: { returnRequestId: id, actorUserId: request.user.id, action: status, note: body.note } });
+    return tx.returnRequest.findUniqueOrThrow({ where: { id }, include: { items: true, auditEvents: { orderBy: { createdAt: "asc" } } } });
+  });
+  if (!updated) return reply.code(409).send({ error: "RETURN_ALREADY_REVIEWED" });
+  return { returnRequest: updated };
+});
+app.post("/admin/returns/:id/complete", { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = idParam.parse(request.params);
+  const body = z.object({ disposition: z.enum(["RESTOCK", "QUARANTINE", "DISCARD"]), cashRefundConfirmed: z.boolean().default(false), note: z.string().trim().max(500).optional() }).parse(request.body);
+  const current = await db.returnRequest.findUnique({ where: { id }, include: { order: { include: { payment: true } }, items: { include: { orderItem: true } } } });
+  if (!current) return reply.code(404).send({ error: "RETURN_NOT_FOUND" });
+  if (current.status !== "APPROVED") return reply.code(409).send({ error: "RETURN_NOT_APPROVED" });
+  const provider = current.order.payment?.provider ?? "";
+  if (provider === "cash_on_delivery" && !body.cashRefundConfirmed) return reply.code(400).send({ error: "CASH_REFUND_CONFIRMATION_REQUIRED" });
+  if (provider !== "cash_on_delivery" && !isMockProvider(provider)) return reply.code(503).send({ error: "REAL_REFUNDS_NOT_CONFIGURED", message: "A verified refund integration is required before online refunds can be completed." });
+  const refundAmountMinor = current.items.reduce((sum, item) => sum + item.unitPriceMinor * item.quantity, 0);
+  const refundStatus = provider === "cash_on_delivery" ? "CASH_PAID_OUT" : "SIMULATED";
+  const result = await db.$transaction(async (tx) => {
+    const changed = await tx.returnRequest.updateMany({ where: { id, status: "APPROVED" }, data: { status: "COMPLETED", reviewerAdminId: request.user.id, adminNote: body.note, disposition: body.disposition, refundStatus, refundAmountMinor } });
+    if (!changed.count) return false;
+    for (const item of current.items) {
+      if (body.disposition === "RESTOCK") {
+        const product = await tx.product.update({ where: { id: item.orderItem.productId }, data: { stock: { increment: item.quantity } } });
+        await tx.inventoryAdjustment.create({ data: { productId: product.id, adminUserId: request.user.id, delta: item.quantity, resultingStock: product.stock, reason: `Return ${id.slice(-8)} restocked` } });
+      }
+      await tx.demandEvent.create({ data: { productId: item.orderItem.productId, type: "RETURN", quantity: item.quantity } });
+    }
+    await tx.returnAuditEvent.create({ data: { returnRequestId: id, actorUserId: request.user.id, action: "COMPLETED", note: body.note ?? `${body.disposition}; refund ${refundStatus}` } });
+    const completed = await tx.returnRequest.findMany({ where: { orderId: current.orderId, status: "COMPLETED" }, select: { refundAmountMinor: true } });
+    const refunded = completed.reduce((sum, item) => sum + item.refundAmountMinor, 0);
+    if (current.order.payment && refunded >= current.order.payment.amountMinor) await tx.payment.update({ where: { orderId: current.orderId }, data: { status: "REFUNDED" } });
+    return true;
+  }, { isolationLevel: "Serializable" });
+  if (!result) return reply.code(409).send({ error: "RETURN_NOT_APPROVED" });
+  return { ok: true, refundStatus, refundAmountMinor, disposition: body.disposition, message: refundStatus === "SIMULATED" ? "Return completed. The recorded refund is simulated; no money was moved." : "Return completed and cash refund was recorded as paid out." };
+});
+
+app.get("/admin/summary", { preHandler: requireAdmin }, async () => {
+  const [products, customers, orders, revenuePayments, completedReturns] = await Promise.all([
+    db.product.count({ where: { active: true } }), db.user.count({ where: { role: "CUSTOMER" } }),
+    db.order.count(), db.payment.findMany({ where: { status: { in: ["SUCCEEDED", "REFUNDED"] }, provider: { notIn: ["mock", "mock_upi", "mock_card"] } }, select: { amountMinor: true } }),
+    db.returnRequest.findMany({ where: { status: "COMPLETED", order: { payment: { is: { provider: { notIn: ["mock", "mock_upi", "mock_card"] } } } } }, select: { refundAmountMinor: true } }),
+  ]);
+  const paid = revenuePayments.reduce((sum, payment) => sum + payment.amountMinor, 0);
+  const refunded = completedReturns.reduce((sum, item) => sum + item.refundAmountMinor, 0);
+  return { products, customers, orders, revenueMinor: Math.max(0, paid - refunded) };
 });
 app.get("/admin/inventory", { preHandler: requireAdmin }, async (request) => {
   const query = z.object({ q: z.string().trim().max(120).optional(), lowStockAt: z.coerce.number().int().min(0).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(request.query);
@@ -300,9 +518,13 @@ app.post("/admin/orders/:id/collect-cash", { preHandler: requireAdmin }, async (
 });
 
 app.addHook("onClose", async () => db.$disconnect());
-try {
-  await app.listen({ port, host: process.env.HOST ?? "0.0.0.0" });
-} catch (error) {
-  app.log.error(error);
-  process.exit(1);
+export { app };
+const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isMain) {
+  try {
+    await app.listen({ port, host: process.env.HOST ?? "0.0.0.0" });
+  } catch (error) {
+    app.log.error(error);
+    process.exit(1);
+  }
 }

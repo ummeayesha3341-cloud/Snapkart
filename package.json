@@ -7,6 +7,11 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.json",
+    "test:e2e": "playwright test",
+    "test:e2e:live": "playwright test --config=playwright.live.config.js",
+    "test:api": "node --import tsx --test tests/api/*.test.js",
+    "test:integration": "node --test tests/integration/catalog.test.js",
+    "test:load": "node scripts/load-test.mjs",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
@@ -26,6 +31,7 @@
     "zod": "^4.1.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^22.15.30",
     "prisma": "^6.16.2",
     "tsx": "^4.20.5",

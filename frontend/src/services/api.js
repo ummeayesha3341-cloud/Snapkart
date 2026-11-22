@@ -42,6 +42,8 @@ export const api={
  checkout:(key,paymentMethod,upiApp)=>req('/checkout',{method:'POST',headers:{'Idempotency-Key':key},body:{paymentMethod,...(upiApp?{upiApp}:{})}}),
  orders:()=>J('/orders'),
  order:id=>J(`/orders/${encodeURIComponent(id)}`),
+ returns:id=>J(`/orders/${encodeURIComponent(id)}/returns`),
+ requestReturn:(id,body)=>J(`/orders/${encodeURIComponent(id)}/returns`,{method:'POST',body}),
  receipt:token=>J(`/receipts/${encodeURIComponent(token)}`,{auth:false}),
  adminSummary:()=>J('/admin/summary'),
  adminInventory:(q='',lowStockAt,page=1,limit=50)=>{const p=new URLSearchParams({page:String(page),limit:String(limit)});if(q)p.set('q',q);if(lowStockAt!==undefined&&lowStockAt!==null)p.set('lowStockAt',String(lowStockAt));return J(`/admin/inventory?${p}`)},
@@ -50,4 +52,9 @@ export const api={
  adminAdjustStock:(id,body)=>J(`/admin/products/${encodeURIComponent(id)}/inventory-adjustments`,{method:'POST',body}),
  adminOrders:(page=1,limit=20,status='')=>J(`/admin/orders?page=${page}&limit=${limit}${status?`&status=${encodeURIComponent(status)}`:''}`),
  adminCollectCash:id=>J(`/admin/orders/${encodeURIComponent(id)}/collect-cash`,{method:'POST',body:{}}),
+ adminSales:(from,to,interval='day')=>{const p=new URLSearchParams({interval});if(from)p.set('from',from);if(to)p.set('to',to);return J(`/admin/analytics/sales?${p}`)},
+ adminDemand:(from,to)=>{const p=new URLSearchParams();if(from)p.set('from',from);if(to)p.set('to',to);return J(`/admin/analytics/demand?${p}`)},
+ adminReturns:(page=1,status='')=>J(`/admin/returns?page=${page}&limit=20${status?`&status=${encodeURIComponent(status)}`:''}`),
+ adminReviewReturn:(id,decision,note='')=>J(`/admin/returns/${encodeURIComponent(id)}/review`,{method:'POST',body:{decision,...(note?{note}:{})}}),
+ adminCompleteReturn:(id,body)=>J(`/admin/returns/${encodeURIComponent(id)}/complete`,{method:'POST',body}),
 };
