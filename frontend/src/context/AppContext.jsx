@@ -65,8 +65,13 @@ export function AppProvider({ children }) {
 
   const login = async ({ email, password }) => {
     const client = requireSupabase();
-    const { error } = await client.auth.signInWithPassword({ email, password });
+    const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) throw error;
+    const emailVerified = Boolean(data.user?.email_confirmed_at || data.user?.confirmed_at);
+    if (!emailVerified) {
+      await client.auth.signOut({ scope: 'local' });
+      throw new Error('Verify your email with the code we sent before signing in.');
+    }
     return loadProfile();
   };
 
@@ -81,13 +86,30 @@ export function AppProvider({ children }) {
       },
     });
     if (error) throw error;
-    if (!data.session) return { confirmationRequired: true };
+    const emailVerified = Boolean(data.user?.email_confirmed_at || data.user?.confirmed_at);
+    if (!emailVerified || !data.session) {
+      if (data.session) await client.auth.signOut({ scope: 'local' });
+      return { confirmationRequired: true };
+    }
     await loadProfile();
     return { confirmationRequired: false };
   };
 
+  const verifySignupOtp = async ({ email, token }) => {
+    const client = requireSupabase();
+    const { error } = await client.auth.verifyOtp({ email, token, type: 'signup' });
+    if (error) throw error;
+    await loadProfile();
+  };
+
+  const resendSignupOtp = async email => {
+    const client = requireSupabase();
+    const { error } = await client.auth.resend({ type: 'signup', email });
+    if (error) throw error;
+  };
+
   const value = {
-    user, ready, cart, toast, notify, logout, loadCart, login, register,
+    user, ready, cart, toast, notify, logout, loadCart, login, register, verifySignupOtp, resendSignupOtp,
     add: async (barcode, quantity) => {
       const d = await api.addItem(barcode, quantity);
       setCart(d.cart || d);

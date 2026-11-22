@@ -18,6 +18,7 @@ async function getOrCreateAppUser(identity: SupabaseUser) {
   const email = identity.email?.trim().toLowerCase();
   if (!email) throw Object.assign(new Error("A verified email address is required"), { statusCode: 403, code: "EMAIL_REQUIRED" });
   const verified = Boolean(identity.email_confirmed_at || identity.confirmed_at);
+  if (!verified) throw Object.assign(new Error("Verify your email address before using SnapKart"), { statusCode: 403, code: "EMAIL_NOT_VERIFIED" });
 
   let user = await db.user.findUnique({ where: { supabaseUserId: identity.id } });
   if (user) return user;
@@ -25,7 +26,6 @@ async function getOrCreateAppUser(identity: SupabaseUser) {
   // Link an existing SnapKart customer/admin only after Supabase confirms control of the email.
   const existingByEmail = await db.user.findUnique({ where: { email } });
   if (existingByEmail) {
-    if (!verified) throw Object.assign(new Error("Verify your email address before linking this SnapKart account"), { statusCode: 403, code: "EMAIL_NOT_VERIFIED" });
     try {
       return await db.user.update({ where: { id: existingByEmail.id }, data: { supabaseUserId: identity.id } });
     } catch (error) {
@@ -37,7 +37,6 @@ async function getOrCreateAppUser(identity: SupabaseUser) {
     }
   }
 
-  if (!verified) throw Object.assign(new Error("Verify your email address before using SnapKart"), { statusCode: 403, code: "EMAIL_NOT_VERIFIED" });
   const name = String(identity.user_metadata?.full_name ?? identity.user_metadata?.name ?? email.split("@")[0]).trim().slice(0, 120) || "SnapKart customer";
   try {
     return await db.$transaction(async tx => {
