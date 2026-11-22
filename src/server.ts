@@ -7,7 +7,7 @@ import rateLimit from "@fastify/rate-limit";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { db } from "./db.js";
-import { requireAdmin, requireAuth } from "./auth.js";
+import { requireAdmin, requireAuth, requireCustomer } from "./auth.js";
 import { normalizeCategory } from "./categories.js";
 import { paymentProvider } from "./payments.js";
 
@@ -97,12 +97,12 @@ app.get("/products/barcode/:barcode", async (request, reply) => {
   return { product: publicProduct(product) };
 });
 
-app.get("/cart", { preHandler: requireAuth }, async (request, reply) => {
+app.get("/cart", { preHandler: requireCustomer }, async (request, reply) => {
   const cart = await db.cart.findUnique({ where: { userId: request.user.id }, include: { items: { include: { product: true }, orderBy: { id: "asc" } } } });
   if (!cart) return reply.code(404).send({ error: "CART_NOT_FOUND" });
   return cartView(cart);
 });
-app.post("/cart/items", { preHandler: requireAuth }, async (request, reply) => {
+app.post("/cart/items", { preHandler: requireCustomer }, async (request, reply) => {
   const body = z.object({ barcode: z.string().min(1).max(80), quantity: z.number().int().min(1).max(99).default(1) }).parse(request.body);
   const product = await db.product.findFirst({ where: { barcode: body.barcode, active: true } });
   if (!product) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
@@ -113,7 +113,7 @@ app.post("/cart/items", { preHandler: requireAuth }, async (request, reply) => {
   const fresh = await db.cart.findUniqueOrThrow({ where: { id: cart.id }, include: { items: { include: { product: true } } } });
   return reply.code(200).send(cartView(fresh));
 });
-app.patch("/cart/items/:id", { preHandler: requireAuth }, async (request, reply) => {
+app.patch("/cart/items/:id", { preHandler: requireCustomer }, async (request, reply) => {
   const { id } = idParam.parse(request.params);
   const { quantity } = z.object({ quantity: z.number().int().min(1).max(99) }).parse(request.body);
   const item = await db.cartItem.findFirst({ where: { id, cart: { userId: request.user.id } }, include: { product: true } });
@@ -122,14 +122,14 @@ app.patch("/cart/items/:id", { preHandler: requireAuth }, async (request, reply)
   await db.cartItem.update({ where: { id }, data: { quantity } });
   return { ok: true };
 });
-app.delete("/cart/items/:id", { preHandler: requireAuth }, async (request, reply) => {
+app.delete("/cart/items/:id", { preHandler: requireCustomer }, async (request, reply) => {
   const { id } = idParam.parse(request.params);
   const result = await db.cartItem.deleteMany({ where: { id, cart: { userId: request.user.id } } });
   if (!result.count) return reply.code(404).send({ error: "CART_ITEM_NOT_FOUND" });
   return reply.code(204).send();
 });
 
-app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
+app.post("/checkout", { preHandler: requireCustomer }, async (request, reply) => {
   const body = z.object({
     paymentMethod: z.enum(["CASH", "UPI", "CARD"]).default("CASH"),
     upiApp: z.enum(["PHONEPE", "GOOGLE_PAY", "PAYTM"]).optional(),
@@ -185,11 +185,11 @@ app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
       : "Order placed. Cash is due when the order is handed over.",
   });
 });
-app.get("/orders", { preHandler: requireAuth }, async (request) => {
+app.get("/orders", { preHandler: requireCustomer }, async (request) => {
   const orders = await db.order.findMany({ where: { userId: request.user.id }, include: { items: true, payment: true }, orderBy: { createdAt: "desc" } });
   return { items: orders };
 });
-app.get("/orders/:id", { preHandler: requireAuth }, async (request, reply) => {
+app.get("/orders/:id", { preHandler: requireCustomer }, async (request, reply) => {
   const { id } = idParam.parse(request.params);
   let order = await db.order.findFirst({ where: { id, userId: request.user.id }, include: { items: true, payment: true } });
   if (!order) return reply.code(404).send({ error: "ORDER_NOT_FOUND" });

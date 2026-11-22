@@ -1,14 +1,15 @@
 import {useCallback,useEffect,useState} from 'react';
+import {useNavigate} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
 import {api} from '../services/api';
-import {Button,Header,Input,Price,StatusBadge} from '../components/ui';
+import {Button,Input,Price,StatusBadge} from '../components/ui';
 import {clean,shortId,when} from '../utils/format';
 
 const moneyValue=p=>(Number(p.priceMinor||0)/100).toFixed(2);
 const blankProduct={barcode:'',name:'',description:'',category:'',brand:'',supplier:'',price:'',stock:'0',currency:'INR'};
 
 export default function Admin(){
- const {notify}=useApp();
+ const {notify,logout,user}=useApp(),navigate=useNavigate();
  const [tab,setTab]=useState('inventory'),[summary,setSummary]=useState(null),[summaryError,setSummaryError]=useState('');
  const [products,setProducts]=useState([]),[total,setTotal]=useState(0),[query,setQuery]=useState(''),[lowOnly,setLowOnly]=useState(false),[loadingProducts,setLoadingProducts]=useState(false);
  const [orders,setOrders]=useState([]),[orderTotal,setOrderTotal]=useState(0),[orderPage,setOrderPage]=useState(1),[orderStatus,setOrderStatus]=useState(''),[loadingOrders,setLoadingOrders]=useState(false);
@@ -28,9 +29,8 @@ export default function Admin(){
  const adjustStock=async e=>{e.preventDefault();if(!adjusting)return;setSaving(true);try{await api.adminAdjustStock(adjusting,{delta:Number(delta),reason});setAdjusting(null);setDelta('');setReason('');notify('Inventory updated');await Promise.all([loadProducts(),loadSummary()])}catch(err){notify(err.message,true)}finally{setSaving(false)}};
  const startEdit=p=>{setEditing(p.id);setEditForm({barcode:p.barcode,name:p.name,description:p.description||'',category:p.category||'',brand:p.brand||'',supplier:p.supplier||'',price:moneyValue(p),currency:p.currency,active:p.active})};
 
- return <div className="page">
-  <Header title="Admin dashboard" back/>
-  <p className="mut" style={{marginTop:-12,marginBottom:16}}>Store operations · inventory, products, and orders</p>
+ return <div className="page admin-page">
+  <div className="row sp" style={{alignItems:'flex-start',marginBottom:18}}><div><p className="eyebrow">SNAPKART · STORE OPERATIONS</p><h1 className="disp" style={{margin:'5px 0'}}>Owner dashboard</h1><p className="mut">Signed in as {clean(user?.email)} · Manage inventory and incoming orders</p></div><Button variant="sec2" onClick={async()=>{await logout();navigate('/login',{replace:true})}}>Sign out</Button></div>
   {summaryError&&<div className="card" style={{marginBottom:12}}><p className="ferr">{summaryError}</p><Button variant="sm sec2" style={{marginTop:10}} onClick={loadSummary}>Retry summary</Button></div>}
   <div className="grid2" style={{marginBottom:18}}>
    <div className="card"><p className="sec">Products</p><strong className="disp">{summary?.products??'—'}</strong></div>

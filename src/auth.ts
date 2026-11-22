@@ -77,3 +77,9 @@ export async function requireAdmin(request: FastifyRequest, reply: FastifyReply)
   if (authResult) return authResult;
   if (request.user.role !== "ADMIN") return reply.code(403).send({ error: "FORBIDDEN", message: "Administrator access required" });
 }
+
+export async function requireCustomer(request: FastifyRequest, reply: FastifyReply) {
+  const authResult = await requireAuth(request, reply);
+  if (authResult) return authResult;
+  if (request.user.role !== "CUSTOMER") return reply.code(403).send({ error: "CUSTOMER_ACCESS_REQUIRED", message: "Shopping and checkout are for customer accounts." });
+}

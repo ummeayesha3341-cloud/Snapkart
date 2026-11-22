@@ -7,6 +7,7 @@ function friendly(status,d,auth){
  if(status===404&&c==='RECEIPT_NOT_FOUND')return {code:c,msg:'This receipt QR is invalid or no longer available.'};
  if(status===404&&(c==='PRODUCT_NOT_FOUND'||!c))return {code:'PRODUCT_NOT_FOUND',msg:"This barcode isn't available in the SnapKart catalog. Try scanning again."};
  if(c==='ONLINE_PAYMENTS_NOT_CONFIGURED')return {code:c,msg:'Test UPI and card payments are not enabled on the backend yet. Set PAYMENT_PROVIDER=mock on the backend and restart it.'};
+ if(status===403&&c==='CUSTOMER_ACCESS_REQUIRED')return {code:c,msg:'This shopping feature requires a customer account.'};
  if(status===401)return {code:'UNAUTHORIZED',msg:auth?'Your session has expired. Please sign in again.':'Incorrect email or password.'};
  if(status===409&&c.includes('STOCK')){const n=x.available??x.stock??x.details?.available;return {code:'INSUFFICIENT_STOCK',msg:(n!=null?`Only ${n} units are currently available.`:'Not enough stock is available.')+' Your cart has been updated.'}}
  if(status===409)return {code:c||'CONFLICT',msg:'An account with this email already exists.'};
