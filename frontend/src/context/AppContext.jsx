@@ -75,7 +75,10 @@ export function AppProvider({ children }) {
     const { data, error } = await client.auth.signUp({
       email,
       password,
-      options: { data: { full_name: name } },
+      options: {
+        emailRedirectTo: window.location.origin,
+        data: { full_name: name },
+      },
     });
     if (error) throw error;
     if (!data.session) return { confirmationRequired: true };
