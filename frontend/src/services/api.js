@@ -1,6 +1,6 @@
 // Centralized API client: base URL, auth header, JSON, timeouts, error mapping, 401 handling.
+import { supabase } from './supabase';
 const BASE=import.meta.env.VITE_API_BASE_URL||'http://localhost:3000';
-export const tokenStore={get:()=>localStorage.getItem('sk_token'),set:t=>t?localStorage.setItem('sk_token',t):localStorage.removeItem('sk_token')};
 export class ApiError extends Error{constructor(status,code,message,data){super(message);this.status=status;this.code=code;this.data=data}}
 function friendly(status,d,auth){
  const x=d?.error&&typeof d.error==='object'?d.error:d||{};const c=String(x.code||(typeof d?.error==='string'?d.error:'')).toUpperCase();
@@ -15,21 +15,21 @@ function friendly(status,d,auth){
  const m=typeof x.message==='string'?x.message:'';return {code:c||'ERROR',msg:m&&m.length<120?m:'Something went wrong. Please try again.'};
 }
 async function req(path,{method='GET',body,headers={},auth=true}={}){
- const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),15000),tk=tokenStore.get();
+ const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),15000);
+ const {data:{session}}=auth&&supabase?await supabase.auth.getSession():{data:{session:null}};
+ const tk=session?.access_token;
  const h={...headers};if(body)h['Content-Type']='application/json';if(auth&&tk)h.Authorization=`Bearer ${tk}`;
  let r;try{r=await fetch(BASE+path,{method,headers:h,body:body?JSON.stringify(body):undefined,signal:ctl.signal})}
  catch(e){throw new ApiError(0,'NETWORK',e.name==='AbortError'?'The request timed out. Please try again.':"Can't reach SnapKart. Check your connection and try again.")}
  finally{clearTimeout(t)}
  let d=null;try{d=await r.json()}catch{}
- if(r.status===401&&auth&&tk){tokenStore.set(null);window.dispatchEvent(new Event('sk:unauthorized'))}
+ if(r.status===401&&auth&&tk)window.dispatchEvent(new Event('sk:unauthorized'));
  if(!r.ok){const f=friendly(r.status,d,auth&&!!tk);throw new ApiError(r.status,f.code,f.msg,d)}
  return {status:r.status,data:d};
 }
 const J=async(p,o)=>(await req(p,o)).data;
 export const api={
  health:()=>J('/health',{auth:false}),
- register:b=>J('/auth/register',{method:'POST',body:b,auth:false}),
- login:b=>J('/auth/login',{method:'POST',body:b,auth:false}),
  me:()=>J('/auth/me'),
  products:(q='',page=1,limit=20,category='')=>{const p=new URLSearchParams({q,page:String(page),limit:String(limit)});if(category)p.set('category',category);return J(`/products?${p}`)},
  byBarcode:c=>J(`/products/barcode/${encodeURIComponent(c)}`),

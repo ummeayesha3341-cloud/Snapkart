@@ -2,23 +2,19 @@ import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
-import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { db } from "./db.js";
 import { requireAdmin, requireAuth } from "./auth.js";
 import { normalizeCategory } from "./categories.js";
+import { paymentProvider } from "./payments.js";
 
 const app = Fastify({ logger: true });
 const port = Number(process.env.PORT ?? 3000);
-const jwtSecret = process.env.JWT_SECRET;
-if (!jwtSecret || jwtSecret.length < 32) throw new Error("JWT_SECRET must be set to at least 32 characters");
-
 await app.register(helmet);
 await app.register(cors, { origin: (process.env.CORS_ORIGIN ?? "http://localhost:5173").split(",") });
 await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
-await app.register(jwt, { secret: jwtSecret, sign: { expiresIn: process.env.JWT_EXPIRES_IN ?? "1h" } });
 
 app.setErrorHandler((error, _request, reply) => {
   app.log.error(error);
@@ -28,10 +24,19 @@ app.setErrorHandler((error, _request, reply) => {
   return reply.code(500).send({ error: "INTERNAL_ERROR", message: "Unexpected server error" });
 });
 
-const emailSchema = z.string().trim().email().max(254);
-const passwordSchema = z.string().min(10).max(128);
 const idParam = z.object({ id: z.string().min(1) });
 const safeUser = (user: { id: string; email: string; name: string; role: string }) => ({ id: user.id, email: user.email, name: user.name, role: user.role });
+// Public catalog responses must not expose supplier, expiry, or internal timestamps.
+const publicProduct = (product: {
+  id: string; barcode: string; name: string; description: string | null;
+  category: string | null; brand: string | null; priceMinor: number;
+  currency: string; stock: number; active: boolean;
+}) => ({
+  id: product.id, barcode: product.barcode, name: product.name,
+  description: product.description, category: product.category, brand: product.brand,
+  priceMinor: product.priceMinor, currency: product.currency, stock: product.stock,
+  active: product.active,
+});
 const cartView = (cart: any) => ({
   id: cart.id,
   items: cart.items.map((item: any) => ({
@@ -43,32 +48,6 @@ const cartView = (cart: any) => ({
 });
 
 app.get("/health", async () => ({ status: "ok" }));
-app.post("/auth/register", async (request, reply) => {
-  const body = z.object({ email: emailSchema, password: passwordSchema, name: z.string().trim().min(1).max(120) }).parse(request.body);
-  const exists = await db.user.findUnique({ where: { email: body.email.toLowerCase() } });
-  if (exists) return reply.code(409).send({ error: "EMAIL_IN_USE" });
-  // Use Node's built-in scrypt so password handling does not require a native addon.
-  const { scrypt, randomBytes } = await import("node:crypto");
-  const { promisify } = await import("node:util");
-  const salt = randomBytes(16).toString("hex");
-  const hash = (await promisify(scrypt)(body.password, salt, 64)) as Buffer;
-  const user = await db.user.create({ data: { email: body.email.toLowerCase(), name: body.name, passwordHash: `scrypt$${salt}$${hash.toString("hex")}` } });
-  const token = app.jwt.sign({ id: user.id, email: user.email, role: user.role });
-  await db.cart.create({ data: { userId: user.id } });
-  return reply.code(201).send({ user: safeUser(user), token });
-});
-app.post("/auth/login", async (request, reply) => {
-  const body = z.object({ email: emailSchema, password: z.string().min(1).max(128) }).parse(request.body);
-  const user = await db.user.findUnique({ where: { email: body.email.toLowerCase() } });
-  if (!user) return reply.code(401).send({ error: "INVALID_CREDENTIALS" });
-  const [algorithm, salt, expected] = user.passwordHash.split("$");
-  if (algorithm !== "scrypt" || !salt || !expected) return reply.code(401).send({ error: "INVALID_CREDENTIALS" });
-  const { scrypt, timingSafeEqual } = await import("node:crypto");
-  const { promisify } = await import("node:util");
-  const actual = (await promisify(scrypt)(body.password, salt, 64)) as Buffer;
-  if (!timingSafeEqual(actual, Buffer.from(expected, "hex"))) return reply.code(401).send({ error: "INVALID_CREDENTIALS" });
-  return { user: safeUser(user), token: app.jwt.sign({ id: user.id, email: user.email, role: user.role }) };
-});
 app.get("/auth/me", { preHandler: requireAuth }, async (request, reply) => {
   const user = await db.user.findUnique({ where: { id: request.user.id } });
   if (!user) return reply.code(404).send({ error: "USER_NOT_FOUND" });
@@ -101,13 +80,13 @@ app.get("/products", async (request) => {
     ...(filters.length ? { AND: filters } : {}),
   };
   const [items, total] = await Promise.all([db.product.findMany({ where, orderBy: { name: "asc" }, skip: (query.page - 1) * query.limit, take: query.limit }), db.product.count({ where })]);
-  return { items, page: query.page, limit: query.limit, total };
+  return { items: items.map(publicProduct), page: query.page, limit: query.limit, total };
 });
 app.get("/products/barcode/:barcode", async (request, reply) => {
   const { barcode } = z.object({ barcode: z.string().min(1).max(80) }).parse(request.params);
   const product = await db.product.findFirst({ where: { barcode, active: true } });
   if (!product) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
-  return { product };
+  return { product: publicProduct(product) };
 });
 
 app.get("/cart", { preHandler: requireAuth }, async (request, reply) => {
@@ -143,14 +122,18 @@ app.delete("/cart/items/:id", { preHandler: requireAuth }, async (request, reply
 });
 
 app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
-  const body = z.object({ paymentMethod: z.enum(["CASH", "UPI", "CARD"]).default("CASH") }).parse(request.body ?? {});
-  if (body.paymentMethod !== "CASH") {
+  const body = z.object({
+    paymentMethod: z.enum(["CASH", "UPI", "CARD"]).default("CASH"),
+    upiApp: z.enum(["PHONEPE", "GOOGLE_PAY", "PAYTM"]).optional(),
+  }).parse(request.body ?? {});
+  const simulatedOnlinePayment = body.paymentMethod !== "CASH";
+  if (simulatedOnlinePayment && process.env.PAYMENT_PROVIDER !== "mock") {
     return reply.code(503).send({ error: "ONLINE_PAYMENTS_NOT_CONFIGURED", message: "Online payments are unavailable until a payment gateway is configured." });
   }
   const key = request.headers["idempotency-key"];
   if (typeof key !== "string" || key.length < 8 || key.length > 128) return reply.code(400).send({ error: "IDEMPOTENCY_KEY_REQUIRED" });
   const existing = await db.order.findUnique({ where: { userId_idempotencyKey: { userId: request.user.id, idempotencyKey: key } }, include: { items: true, payment: true } });
-  if (existing) return { order: existing };
+  if (existing) return { order: existing, simulated: existing.payment?.provider.startsWith("mock_") ?? false };
   const order = await db.$transaction(async (tx) => {
     const cart = await tx.cart.findUnique({ where: { userId: request.user.id }, include: { items: { include: { product: true } } } });
     if (!cart?.items.length) throw Object.assign(new Error("Cart is empty"), { statusCode: 400, code: "EMPTY_CART" });
@@ -160,11 +143,36 @@ app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
       if (changed.count !== 1) throw Object.assign(new Error(`Insufficient stock for ${item.product.name}`), { statusCode: 409, code: "INSUFFICIENT_STOCK" });
     }
     const subtotalMinor = cart.items.reduce((sum, item) => sum + item.product.priceMinor * item.quantity, 0);
-    const created = await tx.order.create({ data: { userId: request.user.id, idempotencyKey: key, subtotalMinor, currency: cart.items[0]!.product.currency, items: { create: cart.items.map(({ product, quantity }) => ({ productId: product.id, barcode: product.barcode, productName: product.name, unitPriceMinor: product.priceMinor, quantity })) }, payment: { create: { provider: "cash_on_delivery", amountMinor: subtotalMinor, currency: cart.items[0]!.product.currency } } }, include: { items: true, payment: true } });
+    const created = await tx.order.create({ data: {
+      userId: request.user.id, idempotencyKey: key, subtotalMinor,
+      currency: cart.items[0]!.product.currency,
+      items: { create: cart.items.map(({ product, quantity }) => ({ productId: product.id, barcode: product.barcode, productName: product.name, unitPriceMinor: product.priceMinor, quantity })) },
+    }, include: { items: true } });
+    let provider = "cash_on_delivery";
+    let paymentStatus: "PENDING" | "SUCCEEDED" = "PENDING";
+    let providerReference: string | undefined;
+    if (simulatedOnlinePayment) {
+      // This is a local mock adapter only: it accepts no card or UPI credentials and moves no money.
+      const result = await paymentProvider.charge({ orderId: created.id, amountMinor: subtotalMinor, currency: created.currency });
+      provider = body.paymentMethod === "UPI" ? "mock_upi" : "mock_card";
+      paymentStatus = result.succeeded ? "SUCCEEDED" : "PENDING";
+      providerReference = `${result.reference}_${body.upiApp ?? "card"}`;
+      if (result.succeeded) await tx.order.update({ where: { id: created.id }, data: { status: "PAID" } });
+    }
+    await tx.payment.create({ data: {
+      orderId: created.id, provider, status: paymentStatus, providerReference,
+      amountMinor: subtotalMinor, currency: created.currency,
+    } });
     await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
-    return created;
+    return tx.order.findUniqueOrThrow({ where: { id: created.id }, include: { items: true, payment: true } });
   }, { isolationLevel: "Serializable" });
-  return reply.code(201).send({ order, message: "Order placed. Cash is due when the order is handed over." });
+  return reply.code(201).send({
+    order,
+    simulated: simulatedOnlinePayment,
+    message: simulatedOnlinePayment
+      ? "Simulated payment succeeded. No money was charged."
+      : "Order placed. Cash is due when the order is handed over.",
+  });
 });
 app.get("/orders", { preHandler: requireAuth }, async (request) => {
   const orders = await db.order.findMany({ where: { userId: request.user.id }, include: { items: true, payment: true }, orderBy: { createdAt: "desc" } });
@@ -180,7 +188,7 @@ app.get("/orders/:id", { preHandler: requireAuth }, async (request, reply) => {
 app.get("/admin/summary", { preHandler: requireAdmin }, async () => {
   const [products, customers, orders, revenue] = await Promise.all([
     db.product.count({ where: { active: true } }), db.user.count({ where: { role: "CUSTOMER" } }),
-    db.order.count(), db.payment.aggregate({ where: { status: "SUCCEEDED", provider: { not: "mock" } }, _sum: { amountMinor: true } }),
+    db.order.count(), db.payment.aggregate({ where: { status: "SUCCEEDED", provider: { notIn: ["mock", "mock_upi", "mock_card"] } }, _sum: { amountMinor: true } }),
   ]);
   return { products, customers, orders, revenueMinor: revenue._sum.amountMinor ?? 0 };
 });
