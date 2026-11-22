@@ -4,6 +4,7 @@ const BASE=import.meta.env.VITE_API_BASE_URL||'http://localhost:3000';
 export class ApiError extends Error{constructor(status,code,message,data){super(message);this.status=status;this.code=code;this.data=data}}
 function friendly(status,d,auth){
  const x=d?.error&&typeof d.error==='object'?d.error:d||{};const c=String(x.code||(typeof d?.error==='string'?d.error:'')).toUpperCase();
+ if(status===404&&c==='RECEIPT_NOT_FOUND')return {code:c,msg:'This receipt QR is invalid or no longer available.'};
  if(status===404&&(c==='PRODUCT_NOT_FOUND'||!c))return {code:'PRODUCT_NOT_FOUND',msg:"This barcode isn't available in the SnapKart catalog. Try scanning again."};
  if(c==='ONLINE_PAYMENTS_NOT_CONFIGURED')return {code:c,msg:'Test UPI and card payments are not enabled on the backend yet. Set PAYMENT_PROVIDER=mock on the backend and restart it.'};
  if(status===401)return {code:'UNAUTHORIZED',msg:auth?'Your session has expired. Please sign in again.':'Incorrect email or password.'};
@@ -40,6 +41,7 @@ export const api={
  checkout:(key,paymentMethod,upiApp)=>req('/checkout',{method:'POST',headers:{'Idempotency-Key':key},body:{paymentMethod,...(upiApp?{upiApp}:{})}}),
  orders:()=>J('/orders'),
  order:id=>J(`/orders/${encodeURIComponent(id)}`),
+ receipt:token=>J(`/receipts/${encodeURIComponent(token)}`,{auth:false}),
  adminSummary:()=>J('/admin/summary'),
  adminInventory:(q='',lowStockAt,page=1,limit=50)=>{const p=new URLSearchParams({page:String(page),limit:String(limit)});if(q)p.set('q',q);if(lowStockAt!==undefined&&lowStockAt!==null)p.set('lowStockAt',String(lowStockAt));return J(`/admin/inventory?${p}`)},
  adminCreateProduct:body=>J('/admin/products',{method:'POST',body}),

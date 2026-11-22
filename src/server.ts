@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -26,6 +27,13 @@ app.setErrorHandler((error, _request, reply) => {
 
 const idParam = z.object({ id: z.string().min(1) });
 const safeUser = (user: { id: string; email: string; name: string; role: string }) => ({ id: user.id, email: user.email, name: user.name, role: user.role });
+const newReceiptToken = () => randomBytes(32).toString("base64url");
+async function ensureReceiptToken(orderId: string) {
+  const token = newReceiptToken();
+  await db.order.updateMany({ where: { id: orderId, receiptToken: null }, data: { receiptToken: token } });
+  const order = await db.order.findUniqueOrThrow({ where: { id: orderId }, select: { receiptToken: true } });
+  return order.receiptToken!;
+}
 // Public catalog responses must not expose supplier, expiry, or internal timestamps.
 const publicProduct = (product: {
   id: string; barcode: string; name: string; description: string | null;
@@ -133,7 +141,10 @@ app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
   const key = request.headers["idempotency-key"];
   if (typeof key !== "string" || key.length < 8 || key.length > 128) return reply.code(400).send({ error: "IDEMPOTENCY_KEY_REQUIRED" });
   const existing = await db.order.findUnique({ where: { userId_idempotencyKey: { userId: request.user.id, idempotencyKey: key } }, include: { items: true, payment: true } });
-  if (existing) return { order: existing, simulated: existing.payment?.provider.startsWith("mock_") ?? false };
+  if (existing) {
+    if (!existing.receiptToken) existing.receiptToken = await ensureReceiptToken(existing.id);
+    return { order: existing, simulated: existing.payment?.provider.startsWith("mock_") ?? false };
+  }
   const order = await db.$transaction(async (tx) => {
     const cart = await tx.cart.findUnique({ where: { userId: request.user.id }, include: { items: { include: { product: true } } } });
     if (!cart?.items.length) throw Object.assign(new Error("Cart is empty"), { statusCode: 400, code: "EMPTY_CART" });
@@ -144,7 +155,7 @@ app.post("/checkout", { preHandler: requireAuth }, async (request, reply) => {
     }
     const subtotalMinor = cart.items.reduce((sum, item) => sum + item.product.priceMinor * item.quantity, 0);
     const created = await tx.order.create({ data: {
-      userId: request.user.id, idempotencyKey: key, subtotalMinor,
+      userId: request.user.id, idempotencyKey: key, subtotalMinor, receiptToken: newReceiptToken(),
       currency: cart.items[0]!.product.currency,
       items: { create: cart.items.map(({ product, quantity }) => ({ productId: product.id, barcode: product.barcode, productName: product.name, unitPriceMinor: product.priceMinor, quantity })) },
     }, include: { items: true } });
@@ -180,9 +191,50 @@ app.get("/orders", { preHandler: requireAuth }, async (request) => {
 });
 app.get("/orders/:id", { preHandler: requireAuth }, async (request, reply) => {
   const { id } = idParam.parse(request.params);
-  const order = await db.order.findFirst({ where: { id, userId: request.user.id }, include: { items: true, payment: true } });
+  let order = await db.order.findFirst({ where: { id, userId: request.user.id }, include: { items: true, payment: true } });
   if (!order) return reply.code(404).send({ error: "ORDER_NOT_FOUND" });
+  if (!order.receiptToken) {
+    await ensureReceiptToken(order.id);
+    order = await db.order.findFirstOrThrow({ where: { id, userId: request.user.id }, include: { items: true, payment: true } });
+  }
   return { order };
+});
+app.get("/receipts/:token", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request, reply) => {
+  const { token } = z.object({ token: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/) }).parse(request.params);
+  const order = await db.order.findUnique({
+    where: { receiptToken: token },
+    select: {
+      id: true, createdAt: true, subtotalMinor: true, currency: true,
+      items: { select: { productName: true, unitPriceMinor: true, quantity: true } },
+      payment: { select: { provider: true, status: true } },
+    },
+  });
+  if (!order) return reply.code(404).send({ error: "RECEIPT_NOT_FOUND" });
+  const provider = order.payment?.provider ?? "unknown";
+  const isTestPayment = provider.startsWith("mock_");
+  const paymentMethod = provider === "cash_on_delivery" ? "Cash at hand-off"
+    : provider === "mock_upi" ? "UPI app (test)"
+    : provider === "mock_card" ? "Card (test)"
+    : "Online payment";
+  const paymentStatus = order.payment?.status === "SUCCEEDED"
+    ? isTestPayment ? "Test payment successful — no money was charged" : "Paid"
+    : provider === "cash_on_delivery" ? "Cash due at hand-off" : "Payment pending";
+  return {
+    receipt: {
+      receiptNumber: order.id.slice(-8).toUpperCase(),
+      createdAt: order.createdAt,
+      totalMinor: order.subtotalMinor,
+      currency: order.currency,
+      paymentMethod,
+      paymentStatus,
+      items: order.items.map((item) => ({
+        name: item.productName,
+        quantity: item.quantity,
+        unitPriceMinor: item.unitPriceMinor,
+        lineTotalMinor: item.unitPriceMinor * item.quantity,
+      })),
+    },
+  };
 });
 
 app.get("/admin/summary", { preHandler: requireAdmin }, async () => {

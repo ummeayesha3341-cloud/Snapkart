@@ -83,6 +83,7 @@ model CartItem {
 
 model Order {
   id             String      @id @default(cuid())
+  receiptToken   String?     @unique
   userId         String
   status         OrderStatus @default(PENDING_PAYMENT)
   subtotalMinor  Int
