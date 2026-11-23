@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "test:e2e": "playwright test",
     "test:e2e:live": "playwright test --config=playwright.live.config.js",
+    "test:barcode": "node --test tests/barcode-formats.test.js",
     "test:api": "node --import tsx --test tests/api/*.test.js",
     "test:integration": "node --test tests/integration/catalog.test.js",
     "test:load": "node scripts/load-test.mjs",

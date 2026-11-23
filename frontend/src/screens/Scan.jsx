@@ -4,6 +4,8 @@ import {api} from '../services/api';
 import {useApp} from '../context/AppContext';
 import {Button,Icon,BottomSheet,QuantitySelector,Price} from '../components/ui';
 import {clean} from '../utils/format';
+import {nativeBarcodeFormats,zxingBarcodeFormats} from '../utils/barcodeFormats';
+const recordLookupTiming=(format,outcome,started)=>{try{const safeFormat=/^[a-z0-9_]+$/i.test(format||'')?format:'unknown';performance.measure(`snapkart:barcode-lookup:${safeFormat}:${outcome}`,{start:started,end:performance.now()})}catch{}};
 // Scanner component: ZXing decodes supported 1D/2D barcode text from the live camera stream.
 export function Scanner({onDetect,paused,onClose}){
  const vid=useRef(),trk=useRef(),controls=useRef(),[err,setErr]=useState(''),[torch,setTorch]=useState(false),[manual,setManual]=useState('');
@@ -17,19 +19,19 @@ export function Scanner({onDetect,paused,onClose}){
   (async()=>{try{
    const NativeDetector=globalThis.BarcodeDetector;
    if(NativeDetector&&navigator.mediaDevices?.getUserMedia){
-    const supported=await NativeDetector.getSupportedFormats().catch(()=>[]),formats=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code','data_matrix'].filter(f=>supported.includes(f));
+     const supported=await NativeDetector.getSupportedFormats().catch(()=>[]),formats=nativeBarcodeFormats(supported);
     if(formats.includes('ean_13')){
      try{const detector=new NativeDetector({formats}),stream=await navigator.mediaDevices.getUserMedia({audio:false,video:videoConstraints});if(stop){stream.getTracks().forEach(t=>t.stop());return}vid.current.srcObject=stream;await vid.current.play();await setupTrack();
-      const detectFrame=async()=>{if(stop)return;try{const codes=await detector.detect(vid.current),code=codes?.[0]?.rawValue;if(code&&!paused.current){navigator.vibrate?.(40);onDetect(code);return}}catch{}nativeTimer=window.setTimeout(detectFrame,180)};
+      const detectFrame=async()=>{if(stop)return;try{const codes=await detector.detect(vid.current),code=codes?.[0]?.rawValue,format=codes?.[0]?.format;if(code&&!paused.current){navigator.vibrate?.(40);onDetect(code,format);return}}catch{}nativeTimer=window.setTimeout(detectFrame,180)};
       detectFrame();controls.current={stop:()=>{if(nativeTimer)window.clearTimeout(nativeTimer)}};return;
      }catch{vid.current?.srcObject?.getTracks?.().forEach(t=>t.stop());vid.current.srcObject=null;trk.current=null}
     }
    }
    const [{BrowserMultiFormatReader},{BarcodeFormat,DecodeHintType}]=await Promise.all([import('@zxing/browser'),import('@zxing/library')]);if(stop)return;
-   const hints=new Map([[DecodeHintType.TRY_HARDER,true],[DecodeHintType.POSSIBLE_FORMATS,[BarcodeFormat.EAN_13,BarcodeFormat.EAN_8,BarcodeFormat.UPC_A,BarcodeFormat.UPC_E,BarcodeFormat.CODE_128,BarcodeFormat.CODE_39,BarcodeFormat.ITF,BarcodeFormat.QR_CODE,BarcodeFormat.DATA_MATRIX]]]);
+   const hints=new Map([[DecodeHintType.TRY_HARDER,true],[DecodeHintType.POSSIBLE_FORMATS,zxingBarcodeFormats(BarcodeFormat)]]);
    const reader=new BrowserMultiFormatReader(hints,250);
    const scanControls=await reader.decodeFromConstraints({audio:false,video:videoConstraints},vid.current,(result)=>{
-    if(result&&!stop&&!paused.current){navigator.vibrate?.(40);onDetect(result.getText())}
+    if(result&&!stop&&!paused.current){navigator.vibrate?.(40);onDetect(result.getText(),result.getBarcodeFormat?.()?.toString?.())}
    });
    if(stop){scanControls.stop();return}
    controls.current=scanControls;await setupTrack();
@@ -45,8 +47,10 @@ export function Scanner({onDetect,paused,onClose}){
 }
 export default function Scan(){
  const nav=useNavigate(),{add,notify}=useApp(),paused=useRef(false),[state,setState]=useState('scan'),[p,setP]=useState(null),[q,setQ]=useState(1),[busy,setBusy]=useState(false),[err,setErr]=useState(null),[added,setAdded]=useState(false),[lastCode,setLastCode]=useState('');
- const detect=useCallback(async code=>{if(paused.current)return;paused.current=true;setLastCode(code);setState('lookup');setErr(null);setAdded(false);setQ(1);
-  try{const d=await api.byBarcode(code);setP(d.product);setState('found')}catch(e){setErr(e.message);setState(e.code==='PRODUCT_NOT_FOUND'?'notFound':'error')}},[]);
+ const detect=useCallback(async (code,format='unknown')=>{if(paused.current)return;paused.current=true;setLastCode(code);setState('lookup');setErr(null);setAdded(false);setQ(1);
+  const started=performance.now();
+  try{const d=await api.byBarcode(code);recordLookupTiming(format,'success',started);setP(d.product);setState('found')}
+  catch(e){recordLookupTiming(format,e.code==='PRODUCT_NOT_FOUND'?'not_found':'error',started);setErr(e.message);setState(e.code==='PRODUCT_NOT_FOUND'?'notFound':'error')}},[]);
  const resume=()=>{setP(null);setErr(null);setState('scan');paused.current=false};
  const addIt=async()=>{setBusy(true);try{await add(p.barcode,q);notify('✓ Added to cart');setAdded(true)}catch(e){setErr(e.message);notify(e.message,true);if(e.code==='INSUFFICIENT_STOCK')setAdded(false)}finally{setBusy(false)}};
  const out=p&&(p.stock<=0||p.active===false);
