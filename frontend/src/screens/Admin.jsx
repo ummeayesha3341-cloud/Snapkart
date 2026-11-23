@@ -6,6 +6,7 @@ import {Button,Input,Price,StatusBadge} from '../components/ui';
 import {clean,shortId,when} from '../utils/format';
 import AdminAnalytics from './AdminAnalytics';
 import AdminReturns from './AdminReturns';
+import AdminStaffAccess from './AdminStaffAccess';
 
 const moneyValue=p=>(Number(p.priceMinor||0)/100).toFixed(2);
 const blankProduct={barcode:'',name:'',description:'',category:'',brand:'',supplier:'',price:'',stock:'0',currency:'INR'};
@@ -41,7 +42,7 @@ export default function Admin(){
    <div className="card"><p className="sec">Paid revenue</p><strong className="h2">{summary?new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR'}).format(summary.revenueMinor/100):'—'}</strong></div>
   </div>
   <div className="row" style={{marginBottom:16,flexWrap:'wrap'}}>
-   {['inventory','orders','analytics','returns'].map(x=><Button key={x} variant={tab===x?'':'sec2'} onClick={()=>setTab(x)}>{({inventory:'Inventory',orders:'Orders',analytics:'Sales & demand',returns:'Returns'})[x]}</Button>)}
+   {['inventory','orders','analytics','returns','staff'].map(x=><Button key={x} variant={tab===x?'':'sec2'} onClick={()=>setTab(x)}>{({inventory:'Inventory',orders:'Orders',analytics:'Sales & demand',returns:'Returns',staff:'Gate staff'})[x]}</Button>)}
   </div>
   {tab==='inventory'&&<section>
    <div className="row sp" style={{marginBottom:8}}><h2 className="h1">Inventory <span className="mut">({total})</span></h2><Button variant="sm" onClick={()=>setShowCreate(v=>!v)}>{showCreate?'Close':'Add product'}</Button></div>
@@ -93,5 +94,6 @@ export default function Admin(){
   </section>}
   {tab==='analytics'&&<AdminAnalytics/>}
   {tab==='returns'&&<AdminReturns/>}
+  {tab==='staff'&&<AdminStaffAccess/>}
  </div>;
 }

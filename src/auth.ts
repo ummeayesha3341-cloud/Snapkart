@@ -3,7 +3,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { Prisma } from "@prisma/client";
 import { db } from "./db.js";
 
-export type AuthUser = { id: string; email: string; role: "CUSTOMER" | "ADMIN"; aal: "aal1" | "aal2" | null };
+export type AuthUser = { id: string; email: string; role: "CUSTOMER" | "STAFF" | "ADMIN"; aal: "aal1" | "aal2" | null };
 declare module "fastify" {
   interface FastifyRequest { user: AuthUser }
 }
@@ -91,4 +91,14 @@ export async function requireCustomer(request: FastifyRequest, reply: FastifyRep
   const authResult = await requireAuth(request, reply);
   if (authResult) return authResult;
   if (request.user.role !== "CUSTOMER") return reply.code(403).send({ error: "CUSTOMER_ACCESS_REQUIRED", message: "Shopping and checkout are for customer accounts." });
+}
+
+export async function requireGateOperator(request: FastifyRequest, reply: FastifyReply) {
+  const authResult = await requireAuth(request, reply);
+  if (authResult) return authResult;
+  if (request.user.role === "ADMIN") {
+    if (request.user.aal !== "aal2") return reply.code(403).send({ error: "MFA_REQUIRED", message: "Verify your authenticator code before using gate tools" });
+    return;
+  }
+  if (request.user.role !== "STAFF") return reply.code(403).send({ error: "STAFF_ACCESS_REQUIRED", message: "Store staff access is required" });
 }

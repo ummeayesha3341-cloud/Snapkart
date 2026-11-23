@@ -18,7 +18,7 @@ export default function PublicReceipt(){
   <Header title="Receipt verification"/>
   <section className="card gap">
    <span className="pill" style={{width:'fit-content',background:'var(--mint)',color:'var(--ink)'}}>✓ Valid SnapKart receipt</span>
-   <div><p className="eyebrow">PURCHASE VERIFIED</p><h1 className="h1">Receipt confirmed</h1><p className="mut">This purchase is recorded in SnapKart.</p></div>
+   <div><p className="eyebrow">PURCHASE VERIFIED</p><h1 className="h1">Receipt confirmed</h1><p className="mut">This purchase is recorded in SnapKart. The receipt QR does not independently verify the items in a bag.</p></div>
    <div className="row sp"><span className="mut">Receipt</span><b>#{receipt.receiptNumber}</b></div>
    <div className="row sp"><span className="mut">Date</span><span>{when(receipt.createdAt)}</span></div>
   </section>

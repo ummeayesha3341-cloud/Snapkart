@@ -5,9 +5,15 @@ export class ApiError extends Error{constructor(status,code,message,data){super(
 function friendly(status,d,auth){
  const x=d?.error&&typeof d.error==='object'?d.error:d||{};const c=String(x.code||(typeof d?.error==='string'?d.error:'')).toUpperCase();
  if(status===404&&c==='RECEIPT_NOT_FOUND')return {code:c,msg:'This receipt QR is invalid or no longer available.'};
+ if(status===404&&c==='STAFF_ACCOUNT_NOT_FOUND')return {code:c,msg:x.message||'That account is not registered in SnapKart yet.'};
  if(status===404&&(c==='PRODUCT_NOT_FOUND'||!c))return {code:'PRODUCT_NOT_FOUND',msg:"This barcode isn't available in the SnapKart catalog. Try scanning again."};
  if(c==='ONLINE_PAYMENTS_NOT_CONFIGURED')return {code:c,msg:'Test UPI and card payments are not enabled on the backend yet. Set PAYMENT_PROVIDER=mock on the backend and restart it.'};
  if(status===403&&c==='CUSTOMER_ACCESS_REQUIRED')return {code:c,msg:'This shopping feature requires a customer account.'};
+ if(status===403&&c==='STAFF_ACCESS_REQUIRED')return {code:c,msg:'This feature requires store staff access.'};
+ if(status===409&&c==='PAYMENT_NOT_SETTLED')return {code:c,msg:'Payment is not settled. Hold the exit and contact the store owner.'};
+ if(status===409&&c==='RECEIPT_ALREADY_CLEARED')return {code:c,msg:'This receipt has already been cleared at the gate.'};
+ if(status===409&&c==='GATE_REVIEW_REQUIRED')return {code:c,msg:'This receipt is on hold for a supervisor review.'};
+ if(status===409&&c==='GATE_EXCEPTION_NOT_CURRENT')return {code:c,msg:'A newer gate review exists. Refresh the exception list.'};
  if(status===401)return {code:'UNAUTHORIZED',msg:auth?'Your session has expired. Please sign in again.':'Incorrect email or password.'};
  if(status===409&&c.includes('STOCK')){const n=x.available??x.stock??x.details?.available;return {code:'INSUFFICIENT_STOCK',msg:(n!=null?`Only ${n} units are currently available.`:'Not enough stock is available.')+' Your cart has been updated.'}}
  if(status===409)return {code:c||'CONFLICT',msg:'An account with this email already exists.'};
@@ -45,6 +51,13 @@ export const api={
  returns:id=>J(`/orders/${encodeURIComponent(id)}/returns`),
  requestReturn:(id,body)=>J(`/orders/${encodeURIComponent(id)}/returns`,{method:'POST',body}),
  receipt:token=>J(`/receipts/${encodeURIComponent(token)}`,{auth:false}),
+ staffGateReceipt:token=>J(`/staff/gate/receipts/${encodeURIComponent(token)}`),
+ staffGateCheck:(token,outcome,note)=>J(`/staff/gate/receipts/${encodeURIComponent(token)}/checks`,{method:'POST',body:{outcome,...(note?{note}:{})}}),
+ adminStaffAccess:()=>J('/admin/staff-access'),
+ adminGateChecks:()=>J('/admin/gate-checks'),
+ adminResolveGateCheck:(id,note)=>J(`/admin/gate-checks/${encodeURIComponent(id)}/resolve`,{method:'POST',body:{note}}),
+ adminGrantStaff:email=>J('/admin/staff-access',{method:'POST',body:{email}}),
+ adminRevokeStaff:id=>J(`/admin/staff-access/${encodeURIComponent(id)}`,{method:'DELETE'}),
  adminSummary:()=>J('/admin/summary'),
  adminInventory:(q='',lowStockAt,page=1,limit=50)=>{const p=new URLSearchParams({page:String(page),limit:String(limit)});if(q)p.set('q',q);if(lowStockAt!==undefined&&lowStockAt!==null)p.set('lowStockAt',String(lowStockAt));return J(`/admin/inventory?${p}`)},
  adminCreateProduct:body=>J('/admin/products',{method:'POST',body}),

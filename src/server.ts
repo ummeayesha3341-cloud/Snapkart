@@ -8,7 +8,7 @@ import rateLimit from "@fastify/rate-limit";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { db } from "./db.js";
-import { requireAdmin, requireAuth, requireCustomer } from "./auth.js";
+import { requireAdmin, requireAuth, requireCustomer, requireGateOperator } from "./auth.js";
 import { normalizeCategory } from "./categories.js";
 import { paymentProvider } from "./payments.js";
 
@@ -43,6 +43,8 @@ app.setErrorHandler((error, _request, reply) => {
 
 const idParam = z.object({ id: z.string().min(1) });
 const isMockProvider = (provider: string) => provider === "mock" || provider.startsWith("mock_");
+const isSettledForGate = (order: { status: string; payment: { status: string; provider: string } | null }) =>
+  order.status === "PAID" && order.payment?.status === "SUCCEEDED" && (!isMockProvider(order.payment.provider) || (process.env.ALLOW_SIMULATED_GATE_PAYMENTS === "true" && process.env.NODE_ENV !== "production"));
 const safeUser = (user: { id: string; email: string; name: string; role: string }) => ({ id: user.id, email: user.email, name: user.name, role: user.role });
 const newReceiptToken = () => randomBytes(32).toString("base64url");
 const recordDemand = async (productId: string, type: "SCAN" | "CART_ADD" | "CART_REMOVE" | "PURCHASE" | "RETURN" | "STOCKOUT_ATTEMPT", quantity = 1, client: { demandEvent: typeof db.demandEvent } = db) => {
@@ -341,6 +343,57 @@ app.get("/receipts/:token", { config: { rateLimit: { max: 30, timeWindow: "1 min
   };
 });
 
+const receiptTokenParams = z.object({ token: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/) });
+const gateReceiptSelect = {
+  id: true, status: true, createdAt: true, subtotalMinor: true, currency: true,
+  payment: { select: { status: true, provider: true } },
+  items: { select: { productName: true, barcode: true, quantity: true, unitPriceMinor: true } },
+} as const;
+app.get("/staff/gate/receipts/:token", { preHandler: requireGateOperator, config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+  const { token } = receiptTokenParams.parse(request.params);
+  const order = await db.order.findUnique({ where: { receiptToken: token }, select: { ...gateReceiptSelect, gateChecks: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, outcome: true, createdAt: true } } } });
+  if (!order) return reply.code(404).send({ error: "RECEIPT_NOT_FOUND" });
+  const paid = isSettledForGate(order);
+  const lastCheck = order.gateChecks[0] ?? null;
+  const previouslyCleared = await db.gateCheck.findFirst({ where: { orderId: order.id, outcome: "CLEARED" }, select: { createdAt: true } });
+  return { receipt: {
+    receiptNumber: order.id.slice(-8).toUpperCase(), createdAt: order.createdAt,
+    totalMinor: order.subtotalMinor, currency: order.currency,
+    paymentStatus: order.payment && isMockProvider(order.payment.provider) ? "SIMULATED — NO MONEY CHARGED" : order.payment?.status ?? "MISSING",
+    gateState: previouslyCleared ? "ALREADY_CLEARED" : lastCheck && ["FLAGGED", "DENIED"].includes(lastCheck.outcome) ? "SUPERVISOR_REVIEW" : paid ? "READY_TO_CHECK" : "PAYMENT_REQUIRED",
+    previouslyClearedAt: previouslyCleared?.createdAt ?? null,
+    items: order.items.map(item => ({ name: item.productName, barcode: item.barcode, quantity: item.quantity, unitPriceMinor: item.unitPriceMinor, lineTotalMinor: item.quantity * item.unitPriceMinor })),
+  } };
+});
+app.post("/staff/gate/receipts/:token/checks", { preHandler: requireGateOperator, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request, reply) => {
+  const { token } = receiptTokenParams.parse(request.params);
+  const body = z.object({ outcome: z.enum(["CLEARED", "FLAGGED"]), note: z.string().trim().max(500).optional() }).superRefine((value, context) => {
+    if (value.outcome === "FLAGGED" && !value.note) context.addIssue({ code: "custom", path: ["note"], message: "Add a short note describing the mismatch" });
+  }).parse(request.body);
+  const order = await db.order.findUnique({ where: { receiptToken: token }, select: { id: true, status: true, payment: { select: { status: true, provider: true } } } });
+  if (!order) return reply.code(404).send({ error: "RECEIPT_NOT_FOUND" });
+  if (!isSettledForGate(order)) {
+    const check = await db.gateCheck.create({ data: { orderId: order.id, staffUserId: request.user.id, outcome: "DENIED", note: "Exit denied: payment is unsettled or simulated" } });
+    return reply.code(409).send({ error: "PAYMENT_NOT_SETTLED", check: { outcome: check.outcome, createdAt: check.createdAt } });
+  }
+  const existing = await db.gateCheck.findFirst({ where: { orderId: order.id, outcome: "CLEARED" }, select: { id: true, createdAt: true } });
+  if (existing) {
+    const check = await db.gateCheck.create({ data: { orderId: order.id, staffUserId: request.user.id, outcome: "DUPLICATE", note: "Receipt was already cleared" } });
+    return reply.code(409).send({ error: "RECEIPT_ALREADY_CLEARED", check: { outcome: check.outcome, createdAt: check.createdAt }, previouslyClearedAt: existing.createdAt });
+  }
+  if (body.outcome === "CLEARED") {
+    const latest = await db.gateCheck.findFirst({ where: { orderId: order.id }, orderBy: { createdAt: "desc" }, select: { outcome: true } });
+    if (latest && ["FLAGGED", "DENIED"].includes(latest.outcome)) return reply.code(409).send({ error: "GATE_REVIEW_REQUIRED" });
+  }
+  try {
+    const check = await db.gateCheck.create({ data: { orderId: order.id, staffUserId: request.user.id, outcome: body.outcome, note: body.note } });
+    return reply.code(201).send({ check: { outcome: check.outcome, createdAt: check.createdAt } });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002" && body.outcome === "CLEARED") return reply.code(409).send({ error: "RECEIPT_ALREADY_CLEARED" });
+    throw error;
+  }
+});
+
 app.get("/admin/analytics/sales", { preHandler: requireAdmin }, async (request, reply) => {
   const query = z.object({ from: z.coerce.date().optional(), to: z.coerce.date().optional(), interval: z.enum(["day", "week", "month"]).default("day") }).parse(request.query);
   const start = query.from ? new Date(Date.UTC(query.from.getUTCFullYear(), query.from.getUTCMonth(), query.from.getUTCDate())) : new Date(Date.now() - 29 * 86400000);
@@ -450,6 +503,47 @@ app.post("/admin/returns/:id/complete", { preHandler: requireAdmin }, async (req
   }, { isolationLevel: "Serializable" });
   if (!result) return reply.code(409).send({ error: "RETURN_NOT_APPROVED" });
   return { ok: true, refundStatus, refundAmountMinor, disposition: body.disposition, message: refundStatus === "SIMULATED" ? "Return completed. The recorded refund is simulated; no money was moved." : "Return completed and cash refund was recorded as paid out." };
+});
+
+app.get("/admin/staff-access", { preHandler: requireAdmin }, async () => {
+  const staff = await db.user.findMany({ where: { role: "STAFF" }, select: { id: true, email: true, name: true, createdAt: true }, orderBy: { email: "asc" } });
+  return { staff };
+});
+app.post("/admin/staff-access", { preHandler: requireAdmin }, async (request, reply) => {
+  const body = z.object({ email: z.string().trim().email().max(320) }).parse(request.body);
+  const user = await db.user.findUnique({ where: { email: body.email.toLowerCase() }, select: { id: true, email: true, name: true, role: true } });
+  if (!user) return reply.code(404).send({ error: "STAFF_ACCOUNT_NOT_FOUND", message: "Ask this person to create and verify a SnapKart account, then grant staff access." });
+  if (user.role === "ADMIN") return reply.code(409).send({ error: "ADMIN_ROLE_PROTECTED" });
+  if (user.role === "STAFF") return { staff: user, unchanged: true };
+  const staff = await db.user.update({ where: { id: user.id }, data: { role: "STAFF" }, select: { id: true, email: true, name: true, role: true } });
+  return reply.code(201).send({ staff });
+});
+app.delete("/admin/staff-access/:id", { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = idParam.parse(request.params);
+  const result = await db.user.updateMany({ where: { id, role: "STAFF" }, data: { role: "CUSTOMER" } });
+  if (!result.count) return reply.code(404).send({ error: "STAFF_ACCOUNT_NOT_FOUND" });
+  return { ok: true };
+});
+app.get("/admin/gate-checks", { preHandler: requireAdmin }, async () => {
+  const checks = await db.gateCheck.findMany({ where: { outcome: { in: ["FLAGGED", "DENIED", "DUPLICATE"] } }, include: { order: { select: { id: true, createdAt: true } }, staff: { select: { name: true, email: true } } }, orderBy: { createdAt: "desc" }, take: 50 });
+  const latest = await Promise.all(checks.map(check => db.gateCheck.findFirst({ where: { orderId: check.orderId }, orderBy: { createdAt: "desc" }, select: { id: true } })));
+  return { checks: checks.filter((check, index) => latest[index]?.id === check.id).map(check => ({ id: check.id, receiptNumber: check.order.id.slice(-8).toUpperCase(), orderCreatedAt: check.order.createdAt, outcome: check.outcome, note: check.note, createdAt: check.createdAt, staff: check.staff })) };
+});
+app.post("/admin/gate-checks/:id/resolve", { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = idParam.parse(request.params);
+  const body = z.object({ note: z.string().trim().min(3).max(500) }).parse(request.body);
+  const flagged = await db.gateCheck.findUnique({ where: { id }, include: { order: { select: { id: true, status: true, payment: { select: { status: true, provider: true } } } } } });
+  if (!flagged || !["FLAGGED", "DENIED"].includes(flagged.outcome)) return reply.code(404).send({ error: "GATE_EXCEPTION_NOT_FOUND" });
+  if (!isSettledForGate(flagged.order)) return reply.code(409).send({ error: "PAYMENT_NOT_SETTLED" });
+  const latest = await db.gateCheck.findFirst({ where: { orderId: flagged.orderId }, orderBy: { createdAt: "desc" }, select: { id: true } });
+  if (latest?.id !== flagged.id) return reply.code(409).send({ error: "GATE_EXCEPTION_NOT_CURRENT" });
+  try {
+    const check = await db.gateCheck.create({ data: { orderId: flagged.orderId, staffUserId: request.user.id, outcome: "CLEARED", note: `Supervisor review: ${body.note}` } });
+    return reply.code(201).send({ check: { outcome: check.outcome, createdAt: check.createdAt } });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return reply.code(409).send({ error: "RECEIPT_ALREADY_CLEARED" });
+    throw error;
+  }
 });
 
 app.get("/admin/summary", { preHandler: requireAdmin }, async () => {
