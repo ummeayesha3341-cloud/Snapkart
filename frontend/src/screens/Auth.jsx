@@ -31,9 +31,9 @@ export default function Auth({mode}){
  <form onSubmit={submit} noValidate>{reg&&<Input label="Full name" value={f.name} onChange={set('name')} error={e.name} autoComplete="name"/>}
  <Input label="Email" type="email" value={f.email} onChange={set('email')} error={e.email} autoComplete="email"/>
  <div style={{position:'relative'}}><Input label="Password" type={show?'text':'password'} value={f.password} onChange={set('password')} error={e.password} autoComplete={reg?'new-password':'current-password'}/><button type="button" aria-label={show?'Hide password':'Show password'} onClick={()=>setShow(!show)} style={{position:'absolute',right:6,top:26,width:40,height:44,border:0,background:'none',color:'var(--mut)'}}><Icon n="eye"/></button></div>
+ {!reg&&<p style={{margin:0,textAlign:'right'}}><Link to="/forgot-password" style={{color:'var(--acc)',fontWeight:600}}>Forgot password?</Link></p>}
  {err&&<p className="ferr" role="alert" style={{marginBottom:12,fontSize:14}}>{err}</p>}{needsVerification&&<button type="button" className="text-button" disabled={busy} onClick={resendLoginVerification} style={{marginBottom:12}}>Resend verification code</button>}{notice&&<p className="auth-notice" role="status">{notice}</p>}
  <Button type="submit" loading={busy}>{busy?(reg?'Creating account...':'Signing you in...'):reg?'Create Account':'Sign In'}</Button></form>
- {!reg&&<p className="mut" style={{textAlign:'right',margin:'-10px 0 18px'}}><Link to="/forgot-password" style={{color:'var(--acc)',fontWeight:600}}>Forgot password?</Link></p>}
  <p className="mut" style={{textAlign:'center',marginTop:22}}>{reg?'Already have an account? ':'New to SnapKart? '}<Link to={reg?'/login':'/register'} style={{color:'var(--acc)',fontWeight:600}}>{reg?'Sign in':'Create account'}</Link></p>
  </>}
  </div>;
