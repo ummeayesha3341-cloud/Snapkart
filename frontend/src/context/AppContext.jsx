@@ -40,30 +40,44 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     let active = true;
+    let readyTimer;
+    const showApp = () => { if (active) setReady(true); };
     const init = async () => {
-      if (!supabase) { setReady(true); return; }
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        try {
-          const d = await api.me();
-          if (active) {
-            setUser(d.user || d);
-            const { data: assuranceData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-            setAssurance(assuranceData?.currentLevel || 'aal1');
-            await loadCart();
-          }
-        } catch {
-          await supabase.auth.signOut();
+      if (!supabase) { showApp(); return; }
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!active) return;
+        window.clearTimeout(readyTimer);
+        showApp();
+        if (!session) return;
+
+        // Do not hold the login screen open while a sleeping API or auth request wakes up.
+        const [profileResult, assuranceResult, cartResult] = await Promise.allSettled([
+          api.me(),
+          supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
+          api.cart(),
+        ]);
+        if (!active) return;
+        if (profileResult.status === 'fulfilled') {
+          const profileData = profileResult.value;
+          setUser(profileData.user || profileData);
         }
+        if (assuranceResult.status === 'fulfilled') {
+          setAssurance(assuranceResult.value.data?.currentLevel || 'aal1');
+        }
+        if (cartResult.status === 'fulfilled') setCart(cartResult.value);
+      } catch {
+        showApp();
       }
-      if (active) setReady(true);
     };
+    // A saved-session refresh can be slow; keep the public login route available meanwhile.
+    readyTimer = window.setTimeout(showApp, 1200);
     void init();
     const { data: { subscription } } = supabase?.auth.onAuthStateChange(event => {
       if (event === 'SIGNED_OUT') { setUser(null); setCart(null); }
     }) || { data: { subscription: null } };
-    return () => { active = false; subscription?.unsubscribe(); };
-  }, [loadCart]);
+    return () => { active = false; window.clearTimeout(readyTimer); subscription?.unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     const expired = () => {
