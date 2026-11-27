@@ -7,16 +7,19 @@ import {clean,shortId,when} from '../utils/format';
 import AdminAnalytics from './AdminAnalytics';
 import AdminReturns from './AdminReturns';
 import AdminStaffAccess from './AdminStaffAccess';
+import AdminReceiving from './AdminReceiving';
+import AdminOverview from './AdminOverview';
 
 const moneyValue=p=>(Number(p.priceMinor||0)/100).toFixed(2);
 const blankProduct={barcode:'',name:'',description:'',category:'',brand:'',supplier:'',price:'',stock:'0',currency:'INR'};
 
 export default function Admin(){
  const {notify,logout,user}=useApp(),navigate=useNavigate();
- const [tab,setTab]=useState('inventory'),[summary,setSummary]=useState(null),[summaryError,setSummaryError]=useState('');
+ const [tab,setTab]=useState('overview'),[summary,setSummary]=useState(null),[summaryError,setSummaryError]=useState('');
  const [products,setProducts]=useState([]),[total,setTotal]=useState(0),[query,setQuery]=useState(''),[lowOnly,setLowOnly]=useState(false),[loadingProducts,setLoadingProducts]=useState(false);
  const [orders,setOrders]=useState([]),[orderTotal,setOrderTotal]=useState(0),[orderPage,setOrderPage]=useState(1),[orderStatus,setOrderStatus]=useState(''),[loadingOrders,setLoadingOrders]=useState(false);
  const [showCreate,setShowCreate]=useState(false),[createForm,setCreateForm]=useState(blankProduct),[saving,setSaving]=useState(false),[editing,setEditing]=useState(null),[editForm,setEditForm]=useState({}),[adjusting,setAdjusting]=useState(null),[delta,setDelta]=useState(''),[reason,setReason]=useState('');
+ const [historyProduct,setHistoryProduct]=useState(''),[historyItems,setHistoryItems]=useState([]),[loadingHistory,setLoadingHistory]=useState(false);
 
  const loadSummary=useCallback(async()=>{try{setSummary(await api.adminSummary());setSummaryError('')}catch(e){setSummaryError(e.message)}},[]);
  const loadProducts=useCallback(async()=>{setLoadingProducts(true);try{const d=await api.adminInventory(query,lowOnly?5:undefined,1,50);setProducts(d.items||[]);setTotal(d.total||0)}catch(e){notify(e.message,true)}finally{setLoadingProducts(false)}},[query,lowOnly,notify]);
@@ -30,20 +33,16 @@ export default function Admin(){
  const saveProduct=async e=>{e.preventDefault();setSaving(true);try{await api.adminUpdateProduct(editing,{...editForm,priceMinor:Math.round(Number(editForm.price)*100),currency:editForm.currency.toUpperCase()});setEditing(null);notify('Product updated');await loadProducts()}catch(err){notify(err.message,true)}finally{setSaving(false)}};
  const collectCash=async id=>{setSaving(true);try{await api.adminCollectCash(id);notify('Cash payment recorded');await Promise.all([loadOrders(),loadSummary()])}catch(err){notify(err.message,true)}finally{setSaving(false)}};
  const adjustStock=async e=>{e.preventDefault();if(!adjusting)return;setSaving(true);try{await api.adminAdjustStock(adjusting,{delta:Number(delta),reason});setAdjusting(null);setDelta('');setReason('');notify('Inventory updated');await Promise.all([loadProducts(),loadSummary()])}catch(err){notify(err.message,true)}finally{setSaving(false)}};
+ const toggleHistory=async id=>{if(historyProduct===id){setHistoryProduct('');setHistoryItems([]);return}setHistoryProduct(id);setLoadingHistory(true);try{const data=await api.adminInventoryHistory(id);setHistoryItems(data.items||[])}catch(err){notify(err.message,true);setHistoryItems([])}finally{setLoadingHistory(false)}};
  const startEdit=p=>{setEditing(p.id);setEditForm({barcode:p.barcode,name:p.name,description:p.description||'',category:p.category||'',brand:p.brand||'',supplier:p.supplier||'',price:moneyValue(p),currency:p.currency,active:p.active})};
 
- return <div className="page admin-page">
-  <div className="row sp" style={{alignItems:'flex-start',marginBottom:18}}><div><p className="eyebrow">SNAPKART · STORE OPERATIONS</p><h1 className="disp" style={{margin:'5px 0'}}>Owner dashboard</h1><p className="mut">Signed in as {clean(user?.email)} · Manage inventory and incoming orders</p></div><div className="row"><Button variant="sec2" onClick={()=>navigate('/admin/security')}>Account security</Button><Button variant="sec2" onClick={async()=>{await logout();navigate('/login',{replace:true})}}>Sign out</Button></div></div>
+ const sections=[['overview','Overview'],['inventory','Products & inventory'],['receiving','Stock receiving'],['orders','Orders'],['analytics','Sales & demand'],['returns','Returns'],['staff','Gate staff']];
+ return <div className="admin-layout">
+  <aside className="admin-sidebar"><a className="admin-brand" href="/admin" onClick={e=>{e.preventDefault();setTab('overview')}}><span className="admin-brand-mark">▣</span><span><strong>SnapKart</strong><small>STORE OPERATIONS</small></span></a><nav className="admin-nav" aria-label="Admin sections">{sections.map(([id,label])=><button type="button" key={id} className={`admin-nav-item section-${id} ${tab===id?'active':''}`} onClick={()=>setTab(id)}><span className="admin-nav-icon" aria-hidden="true">{({overview:'⌂',inventory:'▦',receiving:'↓',orders:'▤',analytics:'↗',returns:'↶',staff:'♙'})[id]}</span>{label}</button>)}</nav><div className="admin-sidebar-bottom"><p>Signed in as</p><strong>{clean(user?.name)||clean(user?.email)}</strong><small>{clean(user?.email)}</small><button type="button" onClick={()=>navigate('/admin/security')}>Account security</button><button type="button" onClick={async()=>{await logout();navigate('/login',{replace:true})}}>Sign out</button></div></aside>
+  <main className="admin-main"><header className="admin-topbar"><div><p className="eyebrow">SNAPKART · STORE OPERATIONS</p><h1>Admin dashboard</h1></div><div className="admin-top-actions"><span className="admin-signed-in">{clean(user?.email)}</span><button className="admin-profile" type="button" aria-label="Account security" onClick={()=>navigate('/admin/security')}>{(clean(user?.name)||clean(user?.email)||'A').slice(0,1).toUpperCase()}</button><button className="admin-signout" type="button" onClick={async()=>{await logout();navigate('/login',{replace:true})}}>Sign out</button></div></header>
+  <div className={`admin-content ${tab==='overview'?'dashboard-overview-active':''}`}>
   {summaryError&&<div className="card" style={{marginBottom:12}}><p className="ferr">{summaryError}</p><Button variant="sm sec2" style={{marginTop:10}} onClick={loadSummary}>Retry summary</Button></div>}
-  <div className="grid2" style={{marginBottom:18}}>
-   <div className="card"><p className="sec">Products</p><strong className="disp">{summary?.products??'—'}</strong></div>
-   <div className="card"><p className="sec">Customers</p><strong className="disp">{summary?.customers??'—'}</strong></div>
-   <div className="card"><p className="sec">Orders</p><strong className="disp">{summary?.orders??'—'}</strong></div>
-   <div className="card"><p className="sec">Paid revenue</p><strong className="h2">{summary?new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR'}).format(summary.revenueMinor/100):'—'}</strong></div>
-  </div>
-  <div className="row" style={{marginBottom:16,flexWrap:'wrap'}}>
-   {['inventory','orders','analytics','returns','staff'].map(x=><Button key={x} variant={tab===x?'':'sec2'} onClick={()=>setTab(x)}>{({inventory:'Inventory',orders:'Orders',analytics:'Sales & demand',returns:'Returns',staff:'Gate staff'})[x]}</Button>)}
-  </div>
+  {tab==='overview'&&<AdminOverview summary={summary} onOpen={setTab}/>}
   {tab==='inventory'&&<section>
    <div className="row sp" style={{marginBottom:8}}><h2 className="h1">Inventory <span className="mut">({total})</span></h2><Button variant="sm" onClick={()=>setShowCreate(v=>!v)}>{showCreate?'Close':'Add product'}</Button></div>
    <Input label="Search products or barcode" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search inventory"/>
@@ -71,17 +70,19 @@ export default function Admin(){
      </form>:<>
       <div className="row sp"><div><h3 className="h2">{clean(p.name)}</h3><p className="mut">{clean(p.barcode)} · {[p.brand,p.category].filter(Boolean).map(clean).join(' · ')}</p></div><span className={`pill ${p.active?'':'err'}`}>{p.active?'Active':'Inactive'}</span></div>
       <div className="row sp"><span>Stock: <strong>{p.stock}</strong></span><Price minor={p.priceMinor} cur={p.currency}/></div>
-      <div className="row"><Button variant="sec2" onClick={()=>startEdit(p)}>Edit</Button><Button variant="sec2" onClick={()=>{setAdjusting(adjusting===p.id?null:p.id);setDelta('');setReason('')}}>{adjusting===p.id?'Close stock form':'Adjust stock'}</Button></div>
+      <div className="row"><Button variant="sec2" onClick={()=>startEdit(p)}>Edit</Button><Button variant="sec2" onClick={()=>{setAdjusting(adjusting===p.id?null:p.id);setDelta('');setReason('')}}>{adjusting===p.id?'Close stock form':'Adjust stock'}</Button><Button variant="sec2" onClick={()=>toggleHistory(p.id)}>{historyProduct===p.id?'Hide history':'Stock history'}</Button></div>
       {adjusting===p.id&&<form className="card gap" onSubmit={adjustStock}>
        <h4 className="h2">Adjust stock for {clean(p.name)}</h4>
        <Input label="Quantity change (+5 or -2)" type="number" min={-p.stock} max={99999} step="1" required value={delta} onChange={e=>setDelta(e.target.value)}/>
        <Input label="Reason" required minLength={3} maxLength={300} value={reason} onChange={e=>setReason(e.target.value)} placeholder="Delivery received, damaged item, correction…"/>
        <Button type="submit" loading={saving} disabled={!Number(delta)}>Apply adjustment</Button>
       </form>}
+      {historyProduct===p.id&&<div className="card gap"><h4 className="h2">Stock movement history</h4>{loadingHistory?<p className="mut">Loading history…</p>:!historyItems.length?<p className="mut">No stock movements recorded yet.</p>:historyItems.map(movement=><div className="row sp" key={movement.id} style={{borderBottom:'1px solid var(--line)',paddingBottom:9}}><div><strong>{movement.movementType.replaceAll('_',' ')}</strong><p className="mut">{clean(movement.reason)} · {when(movement.createdAt)}</p><p className="mut">{movement.adminUser?`By ${clean(movement.adminUser.name)}`:'System'}{movement.order?` · Order ${shortId(movement.order.id)}`:''}{movement.stockReceipt?` · ${clean(movement.stockReceipt.supplier)} ${movement.stockReceipt.deliveryReference?`(${clean(movement.stockReceipt.deliveryReference)})`:''}`:''}</p></div><div style={{textAlign:'right'}}><strong>{movement.delta>0?'+':''}{movement.delta}</strong><p className="mut">Balance {movement.resultingStock}</p></div></div>)}</div>}
      </>}
     </article>)}
    </div>}
   </section>}
+  {tab==='receiving'&&<AdminReceiving onInventoryChanged={async()=>{await Promise.all([loadProducts(),loadSummary()])}}/>}
   {tab==='orders'&&<section>
    <div className="row sp" style={{marginBottom:12}}><h2 className="h1">Orders</h2><select className="inp" aria-label="Filter order status" style={{width:'auto'}} value={orderStatus} onChange={e=>setOrderStatus(e.target.value)}><option value="">All statuses</option><option value="PAID">Paid</option><option value="PENDING_PAYMENT">Pending payment</option><option value="PAYMENT_FAILED">Payment failed</option><option value="CANCELLED">Cancelled</option></select></div>
    {loadingOrders&&!orders.length?<p className="mut">Loading orders…</p>:!orders.length?<div className="card"><p className="mut">No orders found.</p></div>:<div className="gap">{orders.map(o=><article className="card gap" key={o.id}>
@@ -95,5 +96,6 @@ export default function Admin(){
   {tab==='analytics'&&<AdminAnalytics/>}
   {tab==='returns'&&<AdminReturns/>}
   {tab==='staff'&&<AdminStaffAccess/>}
+  </div></main>
  </div>;
 }

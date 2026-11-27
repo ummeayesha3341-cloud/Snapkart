@@ -21,6 +21,19 @@ enum GateCheckOutcome {
   DUPLICATE
 }
 
+enum InventoryMovementType {
+  OPENING_BALANCE
+  MANUAL_ADJUSTMENT
+  SALE
+  RETURN
+  RECEIPT
+}
+
+enum StockReceiptStatus {
+  DRAFT
+  RECEIVED
+}
+
 enum OrderStatus {
   PENDING_PAYMENT
   PAID
@@ -85,6 +98,9 @@ model User {
   reviewedReturns ReturnRequest[] @relation("ReturnReviewer")
   returnAuditEvents ReturnAuditEvent[]
   gateChecks GateCheck[]
+  inventoryAdjustments InventoryAdjustment[] @relation("InventoryAdjustmentAdmin")
+  createdStockReceipts StockReceipt[] @relation("StockReceiptCreator")
+  receivedStockReceipts StockReceipt[] @relation("StockReceiptReceiver")
 }
 
 model Product {
@@ -105,6 +121,8 @@ model Product {
   cartItems   CartItem[]
   orderItems  OrderItem[]
   demandEvents DemandEvent[]
+  inventoryAdjustments InventoryAdjustment[]
+  stockReceiptItems StockReceiptItem[]
 
   @@index([name])
   @@index([active, barcode])
@@ -144,6 +162,7 @@ model Order {
   payment        Payment?
   returnRequests ReturnRequest[]
   gateChecks GateCheck[]
+  inventoryAdjustments InventoryAdjustment[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
@@ -259,11 +278,55 @@ model ReturnAuditEvent {
 model InventoryAdjustment {
   id             String   @id @default(cuid())
   productId      String
-  adminUserId    String
+  adminUserId    String?
+  orderId        String?
+  stockReceiptId String?
+  movementType   InventoryMovementType @default(MANUAL_ADJUSTMENT)
   delta          Int
   resultingStock Int
   reason         String
+  sourceSystem   String?
+  externalReference String?
   createdAt      DateTime @default(now())
+  product        Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  adminUser      User? @relation("InventoryAdjustmentAdmin", fields: [adminUserId], references: [id], onDelete: SetNull)
+  order          Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  stockReceipt   StockReceipt? @relation(fields: [stockReceiptId], references: [id], onDelete: SetNull)
 
   @@index([productId, createdAt])
+  @@index([orderId])
+  @@index([stockReceiptId])
+  @@unique([sourceSystem, externalReference])
+}
+
+model StockReceipt {
+  id                 String @id @default(cuid())
+  supplier           String
+  deliveryReference  String?
+  notes              String?
+  status             StockReceiptStatus @default(DRAFT)
+  createdByAdminId   String
+  receivedByAdminId  String?
+  createdAt          DateTime @default(now())
+  receivedAt         DateTime?
+  createdBy          User @relation("StockReceiptCreator", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  receivedBy         User? @relation("StockReceiptReceiver", fields: [receivedByAdminId], references: [id], onDelete: SetNull)
+  items              StockReceiptItem[]
+  movements          InventoryAdjustment[]
+
+  @@index([status, createdAt])
+  @@index([deliveryReference])
+}
+
+model StockReceiptItem {
+  id              String @id @default(cuid())
+  stockReceiptId  String
+  productId       String
+  quantity        Int
+  unitCostMinor   Int?
+  stockReceipt    StockReceipt @relation(fields: [stockReceiptId], references: [id], onDelete: Cascade)
+  product         Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([stockReceiptId, productId])
+  @@index([productId])
 }

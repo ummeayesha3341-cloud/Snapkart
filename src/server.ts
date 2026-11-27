@@ -203,9 +203,12 @@ app.post("/checkout", { preHandler: requireCustomer }, async (request, reply) =>
     const cart = await tx.cart.findUnique({ where: { userId: request.user.id }, include: { items: { include: { product: true } } } });
     if (!cart?.items.length) throw Object.assign(new Error("Cart is empty"), { statusCode: 400, code: "EMPTY_CART" });
     if (cart.items.some((item) => item.product.currency !== cart.items[0]!.product.currency)) throw Object.assign(new Error("Cart products must use the same currency"), { statusCode: 409, code: "MIXED_CURRENCIES" });
+    const resultingStocks = new Map<string, number>();
     for (const item of cart.items) {
       const changed = await tx.product.updateMany({ where: { id: item.productId, active: true, stock: { gte: item.quantity } }, data: { stock: { decrement: item.quantity } } });
       if (changed.count !== 1) throw Object.assign(new Error(`Insufficient stock for ${item.product.name}`), { statusCode: 409, code: "INSUFFICIENT_STOCK" });
+      const updatedProduct = await tx.product.findUniqueOrThrow({ where: { id: item.productId }, select: { stock: true } });
+      resultingStocks.set(item.productId, updatedProduct.stock);
     }
     const subtotalMinor = cart.items.reduce((sum, item) => sum + item.product.priceMinor * item.quantity, 0);
     const created = await tx.order.create({ data: {
@@ -213,6 +216,10 @@ app.post("/checkout", { preHandler: requireCustomer }, async (request, reply) =>
       currency: cart.items[0]!.product.currency,
       items: { create: cart.items.map(({ product, quantity }) => ({ productId: product.id, barcode: product.barcode, productName: product.name, unitPriceMinor: product.priceMinor, quantity })) },
     }, include: { items: true } });
+    await tx.inventoryAdjustment.createMany({ data: cart.items.map((item) => ({
+      productId: item.productId, orderId: created.id, movementType: "SALE" as const,
+      delta: -item.quantity, resultingStock: resultingStocks.get(item.productId)!, reason: `Checkout ${created.id.slice(-8)}`,
+    })) });
     let provider = "cash_on_delivery";
     let paymentStatus: "PENDING" | "SUCCEEDED" = "PENDING";
     let providerReference: string | undefined;
@@ -491,7 +498,7 @@ app.post("/admin/returns/:id/complete", { preHandler: requireAdmin }, async (req
     for (const item of current.items) {
       if (body.disposition === "RESTOCK") {
         const product = await tx.product.update({ where: { id: item.orderItem.productId }, data: { stock: { increment: item.quantity } } });
-        await tx.inventoryAdjustment.create({ data: { productId: product.id, adminUserId: request.user.id, delta: item.quantity, resultingStock: product.stock, reason: `Return ${id.slice(-8)} restocked` } });
+        await tx.inventoryAdjustment.create({ data: { productId: product.id, adminUserId: request.user.id, orderId: current.orderId, movementType: "RETURN", delta: item.quantity, resultingStock: product.stock, reason: `Return ${id.slice(-8)} restocked` } });
       }
       await tx.demandEvent.create({ data: { productId: item.orderItem.productId, type: "RETURN", quantity: item.quantity } });
     }
@@ -562,9 +569,25 @@ app.get("/admin/inventory", { preHandler: requireAdmin }, async (request) => {
   const [items, total] = await Promise.all([db.product.findMany({ where, orderBy: [{ stock: "asc" }, { name: "asc" }], skip: (query.page - 1) * query.limit, take: query.limit }), db.product.count({ where })]);
   return { items, total, page: query.page, limit: query.limit };
 });
+app.get("/admin/products/:id/inventory-history", { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = idParam.parse(request.params);
+  const query = z.object({ limit: z.coerce.number().int().min(1).max(100).default(30) }).parse(request.query);
+  const product = await db.product.findUnique({ where: { id }, select: { id: true } });
+  if (!product) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
+  const items = await db.inventoryAdjustment.findMany({ where: { productId: id }, include: {
+    adminUser: { select: { id: true, name: true, email: true } },
+    order: { select: { id: true } },
+    stockReceipt: { select: { id: true, supplier: true, deliveryReference: true } },
+  }, orderBy: { createdAt: "desc" }, take: query.limit });
+  return { items };
+});
 app.post("/admin/products", { preHandler: requireAdmin }, async (request, reply) => {
   const body = z.object({ barcode: z.string().trim().min(1).max(80), name: z.string().trim().min(1).max(200), description: z.string().max(2000).optional(), category: z.string().max(120).optional(), brand: z.string().max(120).optional(), supplier: z.string().max(160).optional(), priceMinor: z.number().int().positive(), currency: z.string().length(3).default("INR"), stock: z.number().int().min(0).default(0) }).parse(request.body);
-  const product = await db.product.create({ data: body });
+  const product = await db.$transaction(async (tx) => {
+    const created = await tx.product.create({ data: body });
+    if (created.stock > 0) await tx.inventoryAdjustment.create({ data: { productId: created.id, adminUserId: request.user.id, movementType: "OPENING_BALANCE", delta: created.stock, resultingStock: created.stock, reason: "Product opening stock" } });
+    return created;
+  });
   return reply.code(201).send({ product });
 });
 app.patch("/admin/products/:id", { preHandler: requireAdmin }, async (request, reply) => {
@@ -575,17 +598,60 @@ app.patch("/admin/products/:id", { preHandler: requireAdmin }, async (request, r
 });
 app.post("/admin/products/:id/inventory-adjustments", { preHandler: requireAdmin }, async (request, reply) => {
   const { id } = idParam.parse(request.params);
-  const body = z.object({ delta: z.number().int().refine((value) => value !== 0), reason: z.string().trim().min(3).max(300) }).parse(request.body);
+  const body = z.object({ delta: z.number().int().min(-100000).max(100000).refine((value) => value !== 0), reason: z.string().trim().min(3).max(300) }).parse(request.body);
   const adjustment = await db.$transaction(async (tx) => {
-    const product = await tx.product.findUnique({ where: { id } });
-    if (!product) return null;
-    const resultingStock = product.stock + body.delta;
-    if (resultingStock < 0) throw Object.assign(new Error("Inventory cannot be negative"), { statusCode: 409, code: "NEGATIVE_STOCK" });
-    await tx.product.update({ where: { id }, data: { stock: resultingStock } });
-    return tx.inventoryAdjustment.create({ data: { productId: id, adminUserId: request.user.id, delta: body.delta, resultingStock, reason: body.reason } });
+    const changed = await tx.product.updateMany({ where: { id, ...(body.delta < 0 ? { stock: { gte: -body.delta } } : {}) }, data: { stock: { increment: body.delta } } });
+    if (!changed.count) {
+      const exists = await tx.product.findUnique({ where: { id }, select: { id: true } });
+      if (!exists) return null;
+      throw Object.assign(new Error("Inventory cannot be negative"), { statusCode: 409, code: "NEGATIVE_STOCK" });
+    }
+    const updated = await tx.product.findUniqueOrThrow({ where: { id }, select: { stock: true } });
+    return tx.inventoryAdjustment.create({ data: { productId: id, adminUserId: request.user.id, movementType: "MANUAL_ADJUSTMENT", delta: body.delta, resultingStock: updated.stock, reason: body.reason } });
   });
   if (!adjustment) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
   return reply.code(201).send({ adjustment });
+});
+app.get("/admin/stock-receipts", { preHandler: requireAdmin }, async (request) => {
+  const query = z.object({ status: z.enum(["DRAFT", "RECEIVED"]).optional(), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(request.query);
+  const items = await db.stockReceipt.findMany({ where: query.status ? { status: query.status } : {}, include: {
+    items: { include: { product: { select: { id: true, name: true, barcode: true } } } },
+    createdBy: { select: { id: true, name: true } }, receivedBy: { select: { id: true, name: true } },
+  }, orderBy: { createdAt: "desc" }, take: query.limit });
+  return { items };
+});
+app.post("/admin/stock-receipts", { preHandler: requireAdmin }, async (request, reply) => {
+  const body = z.object({
+    supplier: z.string().trim().min(1).max(160), deliveryReference: z.string().trim().max(120).optional(), notes: z.string().trim().max(500).optional(),
+    items: z.array(z.object({ productId: z.string().min(1), quantity: z.number().int().min(1).max(100000), unitCostMinor: z.number().int().min(0).optional() })).min(1).max(100)
+      .refine((items) => new Set(items.map((item) => item.productId)).size === items.length, "Each product can appear once per receipt"),
+  }).parse(request.body);
+  const productCount = await db.product.count({ where: { id: { in: body.items.map((item) => item.productId) } } });
+  if (productCount !== body.items.length) return reply.code(400).send({ error: "INVALID_RECEIPT_PRODUCTS", message: "One or more receipt products do not exist." });
+  const receipt = await db.stockReceipt.create({ data: {
+    supplier: body.supplier, deliveryReference: body.deliveryReference || null, notes: body.notes || null, createdByAdminId: request.user.id,
+    items: { create: body.items.map((item) => ({ productId: item.productId, quantity: item.quantity, unitCostMinor: item.unitCostMinor ?? null })) },
+  }, include: { items: { include: { product: { select: { id: true, name: true, barcode: true } } } } } });
+  return reply.code(201).send({ receipt });
+});
+app.post("/admin/stock-receipts/:id/receive", { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = idParam.parse(request.params);
+  const result = await db.$transaction(async (tx) => {
+    const changed = await tx.stockReceipt.updateMany({ where: { id, status: "DRAFT" }, data: { status: "RECEIVED", receivedAt: new Date(), receivedByAdminId: request.user.id } });
+    if (!changed.count) return { kind: (await tx.stockReceipt.findUnique({ where: { id }, select: { id: true } })) ? "already_received" as const : "missing" as const };
+    const receipt = await tx.stockReceipt.findUniqueOrThrow({ where: { id }, include: { items: true } });
+    for (const item of receipt.items) {
+      const product = await tx.product.update({ where: { id: item.productId }, data: { stock: { increment: item.quantity } }, select: { stock: true } });
+      await tx.inventoryAdjustment.create({ data: {
+        productId: item.productId, adminUserId: request.user.id, stockReceiptId: id, movementType: "RECEIPT",
+        delta: item.quantity, resultingStock: product.stock, reason: `Delivery received${receipt.deliveryReference ? ` · ${receipt.deliveryReference}` : ""}`,
+      } });
+    }
+    return { kind: "received" as const, receipt };
+  }, { isolationLevel: "Serializable" });
+  if (result.kind === "missing") return reply.code(404).send({ error: "STOCK_RECEIPT_NOT_FOUND" });
+  if (result.kind === "already_received") return reply.code(409).send({ error: "STOCK_RECEIPT_ALREADY_RECEIVED" });
+  return { ok: true, receipt: result.receipt };
 });
 app.get("/admin/orders", { preHandler: requireAdmin }, async (request) => {
   const query = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), status: z.enum(["PENDING_PAYMENT", "PAID", "PAYMENT_FAILED", "CANCELLED"]).optional() }).parse(request.query);
