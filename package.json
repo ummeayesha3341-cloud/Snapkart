@@ -24,8 +24,7 @@
     "@fastify/helmet": "^13.1.1",
     "@fastify/rate-limit": "^10.2.1",
     "@neon/config": "^1.10.0",
-    "@neon/env": "^1.6.8",
-    "@prisma/client": "^6.16.2",
+    "@prisma/client": "^6.19.3",
     "@supabase/supabase-js": "^2.119.2",
     "dotenv": "^16.4.7",
     "fastify": "^5.4.0",
@@ -34,8 +33,12 @@
   "devDependencies": {
     "@playwright/test": "^1.65.1",
     "@types/node": "^22.15.30",
-    "prisma": "^6.16.2",
+    "prisma": "^6.19.3",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.0",
+    "effect": "^3.22.1"
   }
 }

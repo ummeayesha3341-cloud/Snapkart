@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
@@ -12,8 +13,49 @@ import { requireAdmin, requireAuth, requireCustomer, requireGateOperator } from 
 import { normalizeCategory } from "./categories.js";
 import { paymentProvider } from "./payments.js";
 
-const app = Fastify({ logger: { redact: ["req.headers.authorization", "req.headers.cookie", "req.headers.set-cookie"] } });
+const isProduction = process.env.NODE_ENV === "production";
 const port = Number(process.env.PORT ?? 3000);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer between 1 and 65535");
+if (isProduction && (!process.env.DATABASE_URL || !process.env.SUPABASE_URL || !process.env.SUPABASE_PUBLISHABLE_KEY)) {
+  throw new Error("DATABASE_URL, SUPABASE_URL, and SUPABASE_PUBLISHABLE_KEY must be configured in production");
+}
+if (isProduction) {
+  let databaseUrl: URL;
+  try { databaseUrl = new URL(process.env.DATABASE_URL!); }
+  catch { throw new Error("DATABASE_URL must be a valid PostgreSQL connection URL in production"); }
+  if (!/^postgres(?:ql)?:$/.test(databaseUrl.protocol) || !databaseUrl.hostname || !["require", "verify-ca", "verify-full"].includes(databaseUrl.searchParams.get("sslmode") ?? "")) {
+    throw new Error("Production DATABASE_URL must be PostgreSQL and require TLS with sslmode=require or stricter");
+  }
+  if (/your-project|replace-this|placeholder/i.test(process.env.SUPABASE_URL!) || /your-project|replace-this|placeholder/i.test(process.env.SUPABASE_PUBLISHABLE_KEY!)) {
+    throw new Error("Replace placeholder Supabase values before production startup");
+  }
+}
+const configuredOrigins = process.env.CORS_ORIGIN ?? (isProduction ? "" : "http://localhost:5173");
+const rawOrigins = configuredOrigins.split(",").map((origin) => origin.trim()).filter(Boolean);
+if (!rawOrigins.length) throw new Error("Set CORS_ORIGIN to the frontend origin(s) allowed to call this API");
+const allowedOrigins = rawOrigins.map((origin) => {
+  let parsed: URL;
+  try { parsed = new URL(origin); } catch { throw new Error("CORS_ORIGIN must contain exact origin URLs, separated by commas"); }
+  if (origin === "*" || parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password || (isProduction && parsed.protocol !== "https:")) {
+    throw new Error("CORS_ORIGIN must contain exact origins; production origins must use HTTPS");
+  }
+  return parsed.origin;
+});
+if (isProduction && process.env.METRICS_TOKEN && process.env.METRICS_TOKEN.length < 32) throw new Error("METRICS_TOKEN must be at least 32 characters");
+const trustedIpHeader = isProduction && process.env.TRUSTED_CLIENT_IP_HEADER?.trim().toLowerCase() === "cf-connecting-ip"
+  ? "cf-connecting-ip" : null;
+const rateLimitKey = (request: import("fastify").FastifyRequest) => {
+  const forwarded = trustedIpHeader ? request.headers[trustedIpHeader] : undefined;
+  if (typeof forwarded === "string" && isIP(forwarded.trim())) return forwarded.trim();
+  return request.ip;
+};
+const app = Fastify({
+  bodyLimit: 256 * 1024,
+  logger: {
+    level: isProduction ? "info" : (process.env.LOG_LEVEL ?? "info"),
+    redact: ["req.headers.authorization", "req.headers.cookie", "req.headers.set-cookie", "req.headers.x-api-key"],
+  },
+});
 const requestMetrics = new Map<string, { count: number; errors: number; sumSeconds: number; buckets: number[] }>();
 const latencyBuckets = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5];
 app.addHook("onResponse", async (request, reply) => {
@@ -30,12 +72,20 @@ app.addHook("onResponse", async (request, reply) => {
   if (reply.statusCode >= 500 || elapsed >= 1) request.log.warn({ statusCode: reply.statusCode, elapsedMs: Math.round(reply.elapsedTime), route }, "API request needs attention");
 });
 await app.register(helmet);
-await app.register(cors, { origin: (process.env.CORS_ORIGIN ?? "http://localhost:5173").split(",") });
-await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
+await app.register(cors, {
+  origin: allowedOrigins,
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["authorization", "content-type", "idempotency-key"],
+  credentials: false,
+});
+await app.register(rateLimit, { max: 120, timeWindow: "1 minute", keyGenerator: rateLimitKey });
 
 app.setErrorHandler((error, _request, reply) => {
   app.log.error(error);
-  if (error instanceof z.ZodError) return reply.code(400).send({ error: "VALIDATION_ERROR", details: error.issues });
+  if (error instanceof z.ZodError) return reply.code(400).send({
+    error: "VALIDATION_ERROR",
+    details: error.issues.map(({ code, path, message }) => ({ code, path, message })),
+  });
   const appError = error as Error & { statusCode?: number; code?: string };
   if (appError.statusCode && appError.code) return reply.code(appError.statusCode).send({ error: appError.code, message: appError.message });
   return reply.code(500).send({ error: "INTERNAL_ERROR", message: "Unexpected server error" });
@@ -134,7 +184,7 @@ app.get("/products", async (request) => {
   const [items, total] = await Promise.all([db.product.findMany({ where, orderBy: { name: "asc" }, skip: (query.page - 1) * query.limit, take: query.limit }), db.product.count({ where })]);
   return { items: items.map(publicProduct), page: query.page, limit: query.limit, total };
 });
-app.get("/products/barcode/:barcode", async (request, reply) => {
+app.get("/products/barcode/:barcode", { config: { rateLimit: { max: 40, timeWindow: "1 minute" } } }, async (request, reply) => {
   const { barcode } = z.object({ barcode: z.string().min(1).max(80) }).parse(request.params);
   const product = await db.product.findFirst({ where: { barcode, active: true } });
   if (!product) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
@@ -148,7 +198,7 @@ app.get("/cart", { preHandler: requireCustomer }, async (request, reply) => {
   if (!cart) return reply.code(404).send({ error: "CART_NOT_FOUND" });
   return cartView(cart);
 });
-app.post("/cart/items", { preHandler: requireCustomer }, async (request, reply) => {
+app.post("/cart/items", { preHandler: requireCustomer, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request, reply) => {
   const body = z.object({ barcode: z.string().min(1).max(80), quantity: z.number().int().min(1).max(99).default(1) }).parse(request.body);
   const product = await db.product.findFirst({ where: { barcode: body.barcode, active: true } });
   if (!product) return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
@@ -183,7 +233,7 @@ app.delete("/cart/items/:id", { preHandler: requireCustomer }, async (request, r
   return reply.code(204).send();
 });
 
-app.post("/checkout", { preHandler: requireCustomer }, async (request, reply) => {
+app.post("/checkout", { preHandler: requireCustomer, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
   const body = z.object({
     paymentMethod: z.enum(["CASH", "UPI", "CARD"]).default("CASH"),
     upiApp: z.enum(["PHONEPE", "GOOGLE_PAY", "PAYTM"]).optional(),
@@ -261,7 +311,7 @@ app.get("/orders/:id", { preHandler: requireCustomer }, async (request, reply) =
   }
   return { order };
 });
-app.post("/orders/:id/returns", { preHandler: requireCustomer }, async (request, reply) => {
+app.post("/orders/:id/returns", { preHandler: requireCustomer, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
   const { id: orderId } = idParam.parse(request.params);
   const body = z.object({
     reason: z.string().trim().min(3).max(500),
